@@ -43,6 +43,25 @@ class ContractMetadata:
         futures convention.
     description:
         Human readable text used for logs or reports.
+    tick_size:
+        Minimum price increment.  Execution otherwise falls back to a single
+        universe-wide tick value, which is wrong whenever instruments differ.
+    listing_date:
+        First date the instrument was tradeable.  Point-in-time universe
+        eligibility uses this so a backtest cannot hold an instrument that did
+        not yet exist.
+    calendar:
+        Optional per-instrument calendar name, e.g. ``"CRYPTO_DAILY"``.
+    venue:
+        Exchange or venue identifier, e.g. ``"CME"``.
+    contract_size:
+        Units of the underlying per contract, where that differs from the
+        monetary point value.
+    session_regime_changes:
+        Dates on which the venue's session calendar changed, as a mapping of
+        ISO date to calendar name.  CME crypto futures traded a five-day week
+        until 29 May 2026 and around the clock afterwards, so a single backtest
+        spans two session regimes.
     """
 
     symbol: str
@@ -53,6 +72,12 @@ class ContractMetadata:
     data_source: str = "yahoo"
     data_symbol: Optional[str] = None
     description: Optional[str] = None
+    tick_size: Optional[float] = None
+    listing_date: Optional[str] = None
+    calendar: Optional[str] = None
+    venue: Optional[str] = None
+    contract_size: Optional[float] = None
+    session_regime_changes: Optional[Mapping[str, str]] = None
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
         if not self.symbol:
@@ -63,6 +88,20 @@ class ContractMetadata:
             raise ValueError("Sector must be provided")
         if self.contract_step <= 0:
             raise ValueError("Contract step must be positive")
+        if self.tick_size is not None and self.tick_size <= 0:
+            raise ValueError("Tick size must be positive when provided")
+        if self.contract_size is not None and self.contract_size <= 0:
+            raise ValueError("Contract size must be positive when provided")
+
+    @property
+    def listing_timestamp(self):
+        """Return ``listing_date`` as a Timestamp, or ``None`` when unset."""
+
+        if self.listing_date is None:
+            return None
+        import pandas as pd
+
+        return pd.Timestamp(self.listing_date).normalize()
 
     @property
     def vendor_symbol(self) -> str:
@@ -96,6 +135,12 @@ class ContractMetadata:
         data_symbol = data.pop("data_symbol", None)
         description = data.pop("description", None)
         currency = str(data.pop("currency", "USD"))
+        tick_size = data.pop("tick_size", None)
+        listing_date = data.pop("listing_date", None)
+        calendar = data.pop("calendar", None)
+        venue = data.pop("venue", None)
+        contract_size = data.pop("contract_size", None)
+        session_regime_changes = data.pop("session_regime_changes", None)
         if data:
             # Surface configuration typos early.
             unknown = ", ".join(sorted(data))
@@ -109,6 +154,16 @@ class ContractMetadata:
             data_source=data_source,
             data_symbol=str(data_symbol) if data_symbol is not None else None,
             description=str(description) if description is not None else None,
+            tick_size=float(tick_size) if tick_size is not None else None,
+            listing_date=str(listing_date) if listing_date is not None else None,
+            calendar=str(calendar) if calendar is not None else None,
+            venue=str(venue) if venue is not None else None,
+            contract_size=float(contract_size) if contract_size is not None else None,
+            session_regime_changes=(
+                dict(session_regime_changes)
+                if session_regime_changes is not None
+                else None
+            ),
         )
 
 
@@ -152,6 +207,11 @@ class UniverseDefinition:
                 "data_source": c.data_source,
                 "data_symbol": c.vendor_symbol,
                 "description": c.description or "",
+                "tick_size": c.tick_size,
+                "listing_date": c.listing_date,
+                "calendar": c.calendar,
+                "venue": c.venue,
+                "contract_size": c.contract_size,
             }
             for c in self.contracts
         ]

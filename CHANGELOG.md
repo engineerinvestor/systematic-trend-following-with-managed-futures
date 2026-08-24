@@ -24,6 +24,18 @@
   `common_factor` for cross-sectional correlation, and `start_offsets` for
   staggered listing histories.
 - `.gitignore`, `crypto` and `dev` extras, and pytest `testpaths`/`pythonpath`.
+- `tf.data.cme_crypto`: CME crypto contract specifications, the 29 May 2026
+  move to around-the-clock trading encoded as a dated session regime, session
+  and fill-lag helpers, and quarterly roll-schedule construction feeding the
+  existing continuous-series builders.
+- `tf.data.crypto`: reference-price validation that rejects calendar gaps and
+  non-positive prices, spot and local-CSV universe builders, and a `data_span`
+  report of per-instrument history.
+- `tf.costs.crypto`: per-instrument and per-era spread assumptions, commission
+  and participation impact, and `scale_execution_costs` for cost stress tests.
+- `ContractMetadata` gained `tick_size`, `listing_date`, `calendar`, `venue`,
+  `contract_size`, and `session_regime_changes`. Unknown keys are still
+  rejected, so configuration typos still surface immediately.
 
 ### Changed
 - Updated project metadata, documentation, and spec to reflect full signal coverage and current maintainer contacts.

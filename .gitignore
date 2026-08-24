@@ -15,9 +15,10 @@ env/
 .ruff_cache/
 .ipynb_checkpoints/
 
-# Backtest artefacts and market data (never commit market data)
-results/
-data/
+# Backtest artefacts and market data (never commit market data).
+# Anchored to the repo root so these do not also match src/tf/data/.
+/results/
+/data/
 
 # OS
 .DS_Store
