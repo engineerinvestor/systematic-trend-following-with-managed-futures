@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from ..portfolio.sizing import volatility_target_positions
+from ..eval.metrics import TRADING_DAYS
 from ..signals.momentum import timeseries_momentum
 from .execution import (
     Order,
@@ -21,6 +22,14 @@ from .execution import (
     participation_slippage,
     resolve_adv_frame,
 )
+
+
+def _is_daily_calendar(name: object) -> bool:
+    """Return whether a config calendar name denotes a 7-day calendar."""
+
+    from ..data.calendar import TradingCalendar
+
+    return TradingCalendar.from_name(None if name is None else str(name)).freq == "daily"
 
 
 def _deep_update(base: dict, overrides: Mapping[str, object]) -> dict:
@@ -318,6 +327,100 @@ class Backtester:
             and (lhs.prices.equals(rhs.prices) if lhs.prices is not None else rhs.prices is None)
         )
 
+    def _build_signals(self, prices: pd.DataFrame, cfg: Mapping[str, object]) -> pd.DataFrame:
+        """Return the signal frame for ``prices``.
+
+        Without a ``signals.preset`` key this is the historical multi-horizon
+        momentum call, so existing configs behave exactly as before.
+        """
+
+        sig_cfg = cfg.get("signals", {}) or {}
+        if sig_cfg.get("disable_trend"):
+            # Used by the falsification suite to isolate how much of a result
+            # comes from the trend signal rather than from volatility scaling.
+            return pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
+
+        preset = sig_cfg.get("preset")
+        if preset:
+            from ..crypto.presets import build_signals
+
+            data_cfg = cfg.get("data", {}) or {}
+            freq = "daily" if _is_daily_calendar(data_cfg.get("calendar")) else "weekday"
+            options = {
+                key: value
+                for key, value in sig_cfg.items()
+                if key not in {"preset", "horizons", "direction", "lag", "momentum", "disable_trend"}
+            }
+            return build_signals(
+                prices,
+                str(preset),
+                freq=freq,
+                direction=str(sig_cfg.get("direction", "long_short")),
+                horizons=sig_cfg.get("horizons"),
+                lag=int(sig_cfg.get("lag", 1)),
+                **options,
+            )
+
+        momentum_cfg = sig_cfg.get("momentum", {}) or {}
+        return timeseries_momentum(
+            prices,
+            lookbacks=tuple(momentum_cfg.get("lookbacks", [63, 126, 252])),
+            skip_last_n=int(momentum_cfg.get("skip_last_n", 20)),
+        )
+
+    def _build_targets(
+        self,
+        prices: pd.DataFrame,
+        cfg: Mapping[str, object],
+        *,
+        capital: float,
+    ) -> pd.DataFrame:
+        """Return lagged target positions in contracts."""
+
+        risk_cfg = cfg.get("risk", {}) or {}
+        signals = self._build_signals(prices, cfg)
+
+        max_weight = risk_cfg.get(
+            "max_instrument_weight", risk_cfg.get("max_instrument_vol_weight")
+        )
+        periods_per_year = int(risk_cfg.get("periods_per_year", TRADING_DAYS))
+
+        if risk_cfg.get("disable_vol_scaling"):
+            # Equal-risk-free sizing: every active instrument takes the same
+            # notional weight, so any remaining edge is the signal's alone.
+            volatility = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
+        else:
+            volatility = None
+
+        targets = volatility_target_positions(
+            prices=prices,
+            signals=signals,
+            point_values=self._point_values,
+            capital=capital,
+            target_portfolio_vol=risk_cfg.get("target_portfolio_vol", 0.15),
+            gross_exposure_limit=risk_cfg.get("gross_exposure_limit", 3.0),
+            sector_map=self._sector_map,
+            sector_caps=risk_cfg.get("sector_caps"),
+            contract_rounding=self._contract_steps,
+            rebalance_threshold=risk_cfg.get("rebalance_threshold", 0.25),
+            vol_model=risk_cfg.get("vol_model", "ewma"),
+            vol_lookback=risk_cfg.get("vol_lookback", 63),
+            ewma_lambda=risk_cfg.get("ewma_lambda", 0.94),
+            min_vol_periods=risk_cfg.get("min_vol_periods", 20),
+            risk_allocator=risk_cfg.get("risk_allocator", "proportional"),
+            max_position_weight=max_weight,
+            max_asset_weight=risk_cfg.get("max_asset_weight"),
+            volatility=volatility,
+            periods_per_year=periods_per_year,
+            ewma_center_of_mass=risk_cfg.get("ewma_center_of_mass"),
+            vol_warmup=str(risk_cfg.get("vol_warmup", "mask")),
+        )
+
+        # Signals already carry their own one-bar lag; this second shift makes a
+        # target computed through t executable at t+1, matching the engine's
+        # next-session fill convention.
+        return targets.shift(1).reindex_like(prices).fillna(0.0)
+
     def _simulate_once(self, cfg: Mapping[str, object], *, config_hash: str) -> BacktestResults:
         backtest_cfg = cfg.get("backtest", {})
         start = backtest_cfg.get("start")
@@ -338,8 +441,6 @@ class Backtester:
         seed = int(backtest_cfg.get("seed", 0))
         np.random.seed(seed)
 
-        risk_cfg = cfg.get("risk", {})
-        sig_cfg = cfg.get("signals", {}).get("momentum", {})
         exec_cfg = cfg.get("execution", {})
 
         capital = float(backtest_cfg.get("starting_nav", 1_000_000.0))
@@ -358,33 +459,7 @@ class Backtester:
         roll_engine = RollEngine(roll_schedule)
 
         # Signals and targets are pre-computed to keep the event loop light weight.
-        signals = timeseries_momentum(
-            prices,
-            lookbacks=tuple(sig_cfg.get("lookbacks", [63, 126, 252])),
-            skip_last_n=int(sig_cfg.get("skip_last_n", 20)),
-        )
-
-        max_weight = risk_cfg.get("max_instrument_weight", risk_cfg.get("max_instrument_vol_weight"))
-        targets = volatility_target_positions(
-            prices=prices,
-            signals=signals,
-            point_values=self._point_values,
-            capital=capital,
-            target_portfolio_vol=risk_cfg.get("target_portfolio_vol", 0.15),
-            gross_exposure_limit=risk_cfg.get("gross_exposure_limit", 3.0),
-            sector_map=self._sector_map,
-            sector_caps=risk_cfg.get("sector_caps"),
-            contract_rounding=self._contract_steps,
-            rebalance_threshold=risk_cfg.get("rebalance_threshold", 0.25),
-            vol_model=risk_cfg.get("vol_model", "ewma"),
-            vol_lookback=risk_cfg.get("vol_lookback", 63),
-            ewma_lambda=risk_cfg.get("ewma_lambda", 0.94),
-            min_vol_periods=risk_cfg.get("min_vol_periods", 20),
-            risk_allocator=risk_cfg.get("risk_allocator", "proportional"),
-            max_position_weight=max_weight,
-        )
-
-        targets = targets.shift(1).reindex_like(prices).fillna(0.0)
+        targets = self._build_targets(prices, cfg, capital=capital)
 
         point_values = pd.Series(self._point_values, index=prices.columns, dtype=float).fillna(1.0)
         adv_frame = resolve_adv_frame(

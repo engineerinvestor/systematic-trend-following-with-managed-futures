@@ -36,6 +36,19 @@
 - `ContractMetadata` gained `tick_size`, `listing_date`, `calendar`, `venue`,
   `contract_size`, and `session_regime_changes`. Unknown keys are still
   rejected, so configuration typos still surface immediately.
+- `tf.crypto`: four reference presets (`mop2012_tsmom`, `tsmom_1_3_12`,
+  `bottom_up_multisystem`, `btc_long_flat`), each available long/short and
+  long/flat, plus calendar-aware horizon resolution so `"365D"` means 365 bars
+  on a 7-day calendar and 252 on a weekday one.
+- `signals.breakout.donchian_breakout`: a Donchian entry rule in {-1, 0, +1}
+  computed from the bands *before* the current bar.
+- `signals.moving_average.price_minus_ma`: price against its own moving
+  average, the PMAC system named in trend-following research.
+- `timeseries_momentum` gained `transform` (`"sign"` for the published TSMOM
+  construction) and `weighting` (`"equal"` for the 1/3/12-month ensemble).
+- `signals.preset`, `signals.direction`, `signals.disable_trend`, and
+  `risk.disable_vol_scaling` config keys. The last two decompose a result into
+  its trend-signal and volatility-scaling contributions.
 
 ### Changed
 - Updated project metadata, documentation, and spec to reflect full signal coverage and current maintainer contacts.
@@ -52,6 +65,13 @@
   until its volatility estimate is warm. This changes backtest results in the
   first `min_vol_periods` observations; pass `vol_warmup="bfill"` to reproduce
   the old numbers.
+- **`channel_breakout` could not detect a breakout.** Its rolling window
+  included the current bar, so price was always inside the channel and the raw
+  ratio was confined to [-0.5, +0.5], bounded near 0.165 after the tanh, an
+  order of magnitude below what momentum emits. It is a channel-position
+  oscillator and is now documented as one; use `donchian_breakout` for an entry
+  rule. `price_vs_sma` is likewise documented as an SMA-versus-SMA comparison
+  rather than price versus a moving average, which its name implies.
 - **Silent substitution of synthetic data for failed real data.** `ingest` caught
   every exception, including data-quality validation failures, and returned
   generated prices with only a log warning, so a malformed CSV became fabricated
