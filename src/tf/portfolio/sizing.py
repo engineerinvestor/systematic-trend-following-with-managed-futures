@@ -30,6 +30,24 @@ def _round_series_to_contracts(
     return rounded
 
 
+def _apply_max_asset_weight(
+    weights: pd.DataFrame, max_asset_weight: float | None
+) -> pd.DataFrame:
+    """Cap each instrument's share of that day's gross exposure.
+
+    Sector caps do not constrain a single name inside its own sector, so a
+    concentrated universe (crypto in particular, where one asset can dominate the
+    trend) can otherwise put nearly all risk in one instrument.
+    """
+
+    if max_asset_weight is None or max_asset_weight <= 0 or weights.empty:
+        return weights
+    gross = weights.abs().sum(axis=1)
+    limit = gross * float(max_asset_weight)
+    capped = weights.clip(upper=limit, axis=0)
+    return capped.clip(lower=-limit, axis=0)
+
+
 def _scale_to_gross_limit(weights: pd.DataFrame, gross_limit: float | None) -> pd.DataFrame:
     if gross_limit is None or gross_limit <= 0:
         return weights
@@ -74,21 +92,45 @@ def _compute_volatility(
     ewma_lambda: float,
     min_vol_periods: int,
     volatility: pd.DataFrame | None,
+    periods_per_year: int = 252,
+    ewma_center_of_mass: float | None = None,
+    vol_warmup: str = "mask",
 ) -> pd.DataFrame:
     if volatility is not None:
         vol = volatility.copy()
     else:
         returns = prices.pct_change().fillna(0.0)
         if vol_model == "ewma":
-            vol = ewma_vol(returns, lam=ewma_lambda, min_periods=min_vol_periods)
+            vol = ewma_vol(
+                returns,
+                lam=ewma_lambda,
+                min_periods=min_vol_periods,
+                periods_per_year=periods_per_year,
+                center_of_mass=ewma_center_of_mass,
+            )
         elif vol_model == "rolling":
             vol = rolling_volatility(
-                returns, window=vol_lookback, min_periods=min_vol_periods
+                returns,
+                window=vol_lookback,
+                min_periods=min_vol_periods,
+                periods_per_year=periods_per_year,
             )
         else:
             raise ValueError(f"Unknown volatility model: {vol_model}")
     vol = vol.reindex(index=prices.index, columns=prices.columns)
-    return vol.replace(0.0, np.nan).ffill().bfill().fillna(0.0)
+    vol = vol.replace(0.0, np.nan).ffill()
+    if vol_warmup == "bfill":
+        # Pre-0.10 behaviour, retained only to reproduce older results: it fills
+        # the warm-up window with the first volatility estimate computed from
+        # data that had not yet arrived, which is lookahead bias.
+        vol = vol.bfill()
+    elif vol_warmup != "mask":
+        raise ValueError(
+            f"Unknown vol_warmup: {vol_warmup!r}. Expected 'mask' or 'bfill'."
+        )
+    # Under "mask" the warm-up stays NaN, which sizing turns into a zero weight,
+    # so an instrument holds no position until its volatility estimate is warm.
+    return vol.fillna(0.0)
 
 
 def _risk_budget(
@@ -154,7 +196,11 @@ def volatility_target_positions(
     min_vol_periods: int = 20,
     risk_allocator: str = "proportional",
     max_position_weight: float | None = None,
+    max_asset_weight: float | None = None,
     volatility: pd.DataFrame | None = None,
+    periods_per_year: int = 252,
+    ewma_center_of_mass: float | None = None,
+    vol_warmup: str = "mask",
 ) -> pd.DataFrame:
     if prices.empty:
         raise ValueError("Price history is empty")
@@ -170,6 +216,9 @@ def volatility_target_positions(
         ewma_lambda=ewma_lambda,
         min_vol_periods=min_vol_periods,
         volatility=volatility,
+        periods_per_year=periods_per_year,
+        ewma_center_of_mass=ewma_center_of_mass,
+        vol_warmup=vol_warmup,
     ).replace(0.0, np.nan)
 
     risk_budget = _risk_budget(signals, allocator=risk_allocator)
@@ -184,6 +233,7 @@ def volatility_target_positions(
     if max_position_weight is not None and max_position_weight > 0:
         weights = weights.clip(upper=max_position_weight, lower=-max_position_weight)
 
+    weights = _apply_max_asset_weight(weights, max_asset_weight)
     weights = _scale_to_gross_limit(weights, gross_exposure_limit)
 
     capital = float(capital)

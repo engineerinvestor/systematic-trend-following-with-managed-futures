@@ -5,26 +5,32 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+#: Observations per year on a weekday exchange calendar. Instruments that trade
+#: every calendar day, cryptocurrency in particular, need 365 instead; pass
+#: ``periods_per_year`` rather than relying on this default.
 TRADING_DAYS = 252
 
+#: Observations per year on a 7-day calendar.
+CALENDAR_DAYS = 365
 
-def _annualise_return(returns: pd.Series) -> float:
+
+def _annualise_return(returns: pd.Series, periods_per_year: int = TRADING_DAYS) -> float:
     if returns.empty:
         return 0.0
-    return float(returns.mean() * TRADING_DAYS)
+    return float(returns.mean() * periods_per_year)
 
 
-def _annualise_vol(returns: pd.Series) -> float:
+def _annualise_vol(returns: pd.Series, periods_per_year: int = TRADING_DAYS) -> float:
     if returns.empty:
         return 0.0
-    return float(returns.std(ddof=1) * np.sqrt(TRADING_DAYS))
+    return float(returns.std(ddof=1) * np.sqrt(periods_per_year))
 
 
-def _cagr(nav: pd.Series) -> float:
+def _cagr(nav: pd.Series, periods_per_year: int = TRADING_DAYS) -> float:
     if len(nav) < 2 or (nav.iloc[0] == 0):
         return 0.0
     periods = len(nav) - 1
-    years = periods / TRADING_DAYS
+    years = periods / periods_per_year
     if years <= 0:
         return 0.0
     return float((nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1)
@@ -43,8 +49,14 @@ def performance_summary(
     *,
     pnl: pd.Series | None = None,
     trades: pd.DataFrame | None = None,
+    periods_per_year: int = TRADING_DAYS,
 ) -> dict[str, float]:
-    """Return a dictionary of key performance metrics."""
+    """Return a dictionary of key performance metrics.
+
+    ``periods_per_year`` sets the annualisation factor. Use 365 for a series
+    sampled on a 7-day calendar; leaving it at 252 there understates volatility
+    by about 20 percent.
+    """
 
     if nav.empty:
         return {
@@ -62,13 +74,17 @@ def performance_summary(
 
     returns = nav.pct_change().dropna()
 
-    cagr = _cagr(nav)
-    vol = _annualise_vol(returns)
-    ann_return = _annualise_return(returns)
+    cagr = _cagr(nav, periods_per_year)
+    vol = _annualise_vol(returns, periods_per_year)
+    ann_return = _annualise_return(returns, periods_per_year)
     sharpe = ann_return / vol if vol > 0 else 0.0
 
     downside = returns[returns < 0]
-    downside_std = np.sqrt((downside.pow(2).mean())) * np.sqrt(TRADING_DAYS) if not downside.empty else 0.0
+    downside_std = (
+        np.sqrt((downside.pow(2).mean())) * np.sqrt(periods_per_year)
+        if not downside.empty
+        else 0.0
+    )
     sortino = ann_return / downside_std if downside_std > 0 else 0.0
 
     maxdd = _max_drawdown(nav)
@@ -99,7 +115,12 @@ def performance_summary(
     }
 
 
-def compute_rolling_metrics(nav: pd.Series, window: int = 126) -> pd.DataFrame:
+def compute_rolling_metrics(
+    nav: pd.Series,
+    window: int = 126,
+    *,
+    periods_per_year: int = TRADING_DAYS,
+) -> pd.DataFrame:
     """Return rolling volatility and Sharpe statistics."""
 
     if nav.empty:
@@ -112,8 +133,8 @@ def compute_rolling_metrics(nav: pd.Series, window: int = 126) -> pd.DataFrame:
     rolling_mean = returns.rolling(window).mean()
     rolling_std = returns.rolling(window).std()
 
-    rolling_vol = rolling_std * np.sqrt(TRADING_DAYS)
-    rolling_sharpe = rolling_mean * TRADING_DAYS / rolling_std.replace(0, np.nan)
+    rolling_vol = rolling_std * np.sqrt(periods_per_year)
+    rolling_sharpe = rolling_mean * periods_per_year / rolling_std.replace(0, np.nan)
 
     rolling = pd.DataFrame(
         {

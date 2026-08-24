@@ -50,24 +50,39 @@ def _moving_block_bootstrap(
     return samples
 
 
-def _sharpe_ratio(sample: np.ndarray) -> float:
+def _sharpe_ratio(sample: np.ndarray, periods_per_year: int = TRADING_DAYS) -> float:
     mean = sample.mean()
     std = sample.std(ddof=1)
     if std == 0:
         return 0.0
-    return float(np.sqrt(TRADING_DAYS) * mean / std)
+    return float(np.sqrt(periods_per_year) * mean / std)
 
 
-def _max_drawdown(sample: np.ndarray) -> float:
+def _max_drawdown(sample: np.ndarray, periods_per_year: int = TRADING_DAYS) -> float:
     nav = np.cumprod(1 + sample)
     running_max = np.maximum.accumulate(nav)
     drawdowns = nav / running_max - 1.0
     return float(drawdowns.min())
 
 
-_METRIC_FUNCTIONS: dict[str, Callable[[np.ndarray], float]] = {
+def _annualised_return(sample: np.ndarray, periods_per_year: int = TRADING_DAYS) -> float:
+    return float(sample.mean() * periods_per_year)
+
+
+def _annualised_vol(sample: np.ndarray, periods_per_year: int = TRADING_DAYS) -> float:
+    return float(sample.std(ddof=1) * np.sqrt(periods_per_year))
+
+
+def _hit_rate(sample: np.ndarray, periods_per_year: int = TRADING_DAYS) -> float:
+    return float((sample > 0).mean())
+
+
+_METRIC_FUNCTIONS: dict[str, Callable[[np.ndarray, int], float]] = {
     "sharpe": _sharpe_ratio,
     "max_drawdown": _max_drawdown,
+    "annual_return": _annualised_return,
+    "volatility": _annualised_vol,
+    "hit_rate": _hit_rate,
 }
 
 
@@ -79,6 +94,7 @@ def bootstrap_confidence_intervals(
     block_size: int = 20,
     ci: float = 0.95,
     seed: int | None = None,
+    periods_per_year: int = TRADING_DAYS,
 ) -> dict[str, BootstrapInterval]:
     """Estimate confidence intervals for key metrics using block bootstrap."""
 
@@ -103,7 +119,7 @@ def bootstrap_confidence_intervals(
         fn = _METRIC_FUNCTIONS.get(metric.lower())
         if fn is None:
             raise KeyError(f"Unsupported metric '{metric}'. Available: {list(_METRIC_FUNCTIONS)}")
-        stats = np.apply_along_axis(fn, 1, samples)
+        stats = np.apply_along_axis(fn, 1, samples, periods_per_year)
         interval = BootstrapInterval(
             mean=float(np.mean(stats)),
             lower=float(np.percentile(stats, lower_q)),

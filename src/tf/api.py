@@ -13,9 +13,15 @@ from collections.abc import Mapping, MutableMapping, Sequence
 import pandas as pd
 import yaml
 
+from .data.calendar import TradingCalendar
 from .data.ingest import load_prices_or_generate
 from .engine.backtester import BacktestResults, Backtester, expand_parameter_grid
 from .research.walkforward import WalkForwardResult
+
+
+#: Seed used for synthetic prices when a config omits ``backtest.seed``.
+#: Previously ``None`` was forwarded, making synthetic runs irreproducible.
+DEFAULT_PRICE_SEED = 42
 
 
 @dataclass(frozen=True)
@@ -160,18 +166,26 @@ def _prepare_context(
 
     data_cfg = cfg_data.get("data", {})
     prefer_prices = "auto"
+    calendar_name = None
+    strict_prices = False
     if isinstance(data_cfg, Mapping):
         prefer_prices = str(
             data_cfg.get("prefer_prices", data_cfg.get("price_preference", data_cfg.get("prefer", "auto")))
         ).lower()
+        calendar_name = data_cfg.get("calendar")
+        strict_prices = bool(data_cfg.get("strict", False))
 
     if prices is None:
         prices = load_prices_or_generate(
             universe_list,
             str(start),
             str(end),
-            seed=None if resolved_price_seed is None else int(resolved_price_seed),
+            seed=DEFAULT_PRICE_SEED
+            if resolved_price_seed is None
+            else int(resolved_price_seed),
             prefer=prefer_prices,
+            calendar=TradingCalendar.from_name(calendar_name),
+            strict=strict_prices,
         )
     else:
         prices = prices.copy()

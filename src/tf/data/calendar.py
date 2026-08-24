@@ -1,4 +1,4 @@
-"""Trading calendar utilities for aligning daily futures data."""
+"""Trading calendar utilities for aligning daily price data."""
 
 from __future__ import annotations
 
@@ -22,20 +22,75 @@ def _normalize_holidays(holidays: Optional[Iterable[pd.Timestamp]]) -> list[pd.T
     return normalized
 
 
+#: Calendar names accepted in ``config["data"]["calendar"]``, mapped to a session
+#: frequency. Names are matched case-insensitively.
+_NAMED_FREQUENCIES = {
+    "generic": "weekday",
+    "weekday": "weekday",
+    "daily": "daily",
+    "crypto": "daily",
+    "crypto_daily": "daily",
+    "24/7": "daily",
+}
+
+_VALID_FREQUENCIES = ("weekday", "daily")
+
+
 @dataclass(slots=True)
 class TradingCalendar:
-    """Simple weekday trading calendar with optional holiday exclusions."""
+    """Trading calendar with optional holiday exclusions.
+
+    ``freq`` selects the session frequency. ``"weekday"`` yields Monday to Friday
+    sessions and suits exchange-traded futures. ``"daily"`` yields every calendar
+    day and suits cryptocurrency, which trades through weekends; aligning crypto
+    to a weekday calendar would silently discard two sevenths of its observations.
+    """
 
     name: str = "weekday"
     holidays: Sequence[pd.Timestamp] = field(default_factory=list)
+    freq: str = "weekday"
 
     def __post_init__(self) -> None:
         self.holidays = tuple(_normalize_holidays(self.holidays))
+        freq = str(self.freq).lower()
+        if freq not in _VALID_FREQUENCIES:
+            raise ValueError(
+                f"Unknown calendar frequency: {self.freq!r}. "
+                f"Expected one of {_VALID_FREQUENCIES}."
+            )
+        self.freq = freq
+
+    @classmethod
+    def from_name(
+        cls,
+        name: str | None,
+        *,
+        holidays: Optional[Iterable[pd.Timestamp]] = None,
+    ) -> "TradingCalendar":
+        """Build a calendar from a config name such as ``"CRYPTO_DAILY"``.
+
+        ``None`` or an unrecognised name yields the weekday default, so configs
+        written before the crypto extension keep their behaviour.
+        """
+
+        if name is None:
+            return cls(holidays=list(holidays or []))
+        key = str(name).strip().lower()
+        freq = _NAMED_FREQUENCIES.get(key)
+        if freq is None:
+            logger.warning(
+                "Unknown calendar name %r; defaulting to a weekday calendar", name
+            )
+            freq = "weekday"
+        return cls(name=key, holidays=list(holidays or []), freq=freq)
 
     def sessions(self, start: str | pd.Timestamp, end: str | pd.Timestamp) -> pd.DatetimeIndex:
         """Return trading sessions between ``start`` and ``end`` (inclusive)."""
 
-        sessions = pd.bdate_range(start=start, end=end, freq="C")
+        if self.freq == "daily":
+            sessions = pd.date_range(start=start, end=end, freq="D")
+        else:
+            sessions = pd.bdate_range(start=start, end=end, freq="C")
         if not self.holidays:
             return sessions
         mask = ~sessions.isin(self.holidays)

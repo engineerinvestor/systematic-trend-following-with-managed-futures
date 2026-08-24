@@ -34,6 +34,7 @@ def load_prices_or_generate(
     calendar: TradingCalendar | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    strict: bool = False,
 ) -> pd.DataFrame:
     """Return daily close prices in wide format for the provided universe.
 
@@ -55,6 +56,10 @@ def load_prices_or_generate(
     calendar:
         Optional trading calendar for alignment and validation.  When omitted a
         simple weekday calendar is used.
+    strict:
+        When ``True`` the synthetic fallback is disabled and any vendor or
+        validation failure is raised.  Use it whenever a result depends on the
+        data actually being real.
     """
 
     resolved_start = start or start_date
@@ -79,21 +84,41 @@ def load_prices_or_generate(
     if prefer != "synthetic":
         try:
             prices = _load_from_vendor(universe_meta, resolved_start, resolved_end)
+        except Exception as exc:  # pragma: no cover - network failure path
+            if strict:
+                raise
+            logger.warning("Vendor data request failed (%s). Using synthetic.", exc)
+        else:
             if not prices.empty:
+                # Validation errors are raised, never swallowed: substituting
+                # synthetic data for a real series that failed a data-quality
+                # check would silently turn a research result into fiction.
                 calendar.validate(prices)
                 validate_price_data(prices, min_price=0.0, max_consecutive_missing=5)
                 aligned = calendar.align(prices, resolved_start, resolved_end)
                 validate_price_data(aligned, min_price=0.0, max_consecutive_missing=5)
                 return aligned
+            if strict:
+                raise ValueError(
+                    "No vendor data returned for "
+                    + ", ".join(c.symbol for c in universe_meta.contracts)
+                )
             logger.info(
                 "No vendor data returned for %s – falling back to synthetic",
                 ", ".join(c.symbol for c in universe_meta.contracts),
             )
-        except Exception as exc:  # pragma: no cover - network failure path
-            logger.warning("Vendor data request failed (%s). Using synthetic.", exc)
+
+    if strict and prefer != "synthetic":
+        raise ValueError("strict=True forbids the synthetic price fallback")
 
     symbols = [c.symbol for c in universe_meta.contracts]
-    prices = generate_synthetic_prices(symbols, resolved_start, resolved_end, seed=seed)
+    prices = generate_synthetic_prices(
+        symbols,
+        resolved_start,
+        resolved_end,
+        seed=seed,
+        freq="D" if calendar.freq == "daily" else "C",
+    )
     return calendar.align(prices, resolved_start, resolved_end)
 
 

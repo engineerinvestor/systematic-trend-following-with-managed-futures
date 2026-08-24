@@ -6,6 +6,20 @@ import numpy as np
 import pandas as pd
 
 
+def com_to_lambda(center_of_mass: float) -> float:
+    """Convert an EWMA center of mass to the equivalent decay factor.
+
+    Trend-following research states EWMA volatility windows as a center of mass
+    (Moskowitz, Ooi, and Pedersen use 60 days; CTA replication work commonly uses
+    40), while :func:`ewma_vol` takes a RiskMetrics decay factor. The two are
+    related by ``com = lam / (1 - lam)``.
+    """
+
+    if center_of_mass <= 0:
+        raise ValueError("center_of_mass must be positive")
+    return float(center_of_mass) / (float(center_of_mass) + 1.0)
+
+
 def ewma_vol(
     returns: pd.DataFrame,
     lam: float = 0.94,
@@ -13,8 +27,16 @@ def ewma_vol(
     *,
     annualize: bool = True,
     periods_per_year: int = 252,
+    center_of_mass: float | None = None,
 ) -> pd.DataFrame:
-    """Exponentially weighted volatility estimate."""
+    """Exponentially weighted volatility estimate.
+
+    Pass either ``lam`` (a RiskMetrics decay factor) or ``center_of_mass``; the
+    latter takes precedence and is converted with :func:`com_to_lambda`.
+    """
+
+    if center_of_mass is not None:
+        lam = com_to_lambda(center_of_mass)
 
     if not 0 < lam < 1:
         raise ValueError("lambda must be between 0 and 1")
