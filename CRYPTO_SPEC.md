@@ -2,9 +2,11 @@
 
 Maintained by Engineer Investor ([@egr_investor](https://x.com/egr_investor)).
 
-Status: draft for v0.1. This document specifies a cryptocurrency extension to the
-existing `tf-trend` research engine. It pairs with `SPEC.md` (core architecture) and
-reuses the existing data, signal, risk, engine, and research layers wherever possible.
+Status: implemented in v0.1. This document specifies a cryptocurrency extension
+to the existing `tf-trend` research engine. It pairs with `SPEC.md` (core
+architecture) and reuses the existing data, signal, risk, engine, and research
+layers wherever possible. Section 13 records where the implementation departed
+from this specification and why.
 
 ## 1. Purpose
 
@@ -408,3 +410,81 @@ research. It does not reproduce, and does not claim to reproduce, any proprietar
 strategy of AQR, ReSolve Asset Management, Return Stacked ETFs, Man AHL, or any other
 manager or product. Nothing in this repository is investment advice. Cryptocurrency
 markets carry substantial risk, including total loss.
+
+## 13. Implementation notes
+
+Where building v0.1 contradicted this specification, the specification is wrong
+and these notes are right.
+
+### Presets are equal-weighted over the horizons named here
+
+Section 4.3's thirteen-horizon ladder is this package's default, not any
+manager's published constant. CTA replication research describes thirteen
+lookbacks spanning weeks to over a year with Ridge-fitted weights; the specific
+day values and the equal weighting are ours.
+
+### Time-series momentum uses sign signals, not tanh strength
+
+The existing `timeseries_momentum` returned a tanh-squashed magnitude. The
+published construction takes the sign, so `transform="sign"` was added and the
+presets use it. With sign signals the existing proportional risk budget reduces
+to equal weight across active instruments, which is the intended construction.
+
+### Two defects blocked correct implementation and were fixed
+
+`channel_breakout` included the current bar in its own high-low window, so it
+could never signal a breakout; `donchian_breakout` was added and the original
+is documented as a channel-position oscillator. Position sizing back-filled the
+volatility warm-up from data that had not yet arrived, which was lookahead bias
+in every backtest the package produced. Both are recorded in `CHANGELOG.md`.
+
+### The placebo is vectorised and gross of execution
+
+Section 8.2 specifies 1,000 randomised-sign draws. A thousand full order-queue
+backtests take roughly twenty minutes, so the placebo uses a vectorised
+signal-to-NAV path that skips queueing and fills. A placebo tests whether a
+signal's direction carried information, not whether it could be executed. The
+report labels the figure accordingly.
+
+The placebo flips one sign per instrument, so a universe of *n* instruments has
+only 2^n distinct outcomes. With the four-asset reference universe that is 16,
+and the reported percentile is correspondingly coarse. The report says so.
+
+### Mixed futures and cryptocurrency universes are unsupported
+
+All instruments share one index and one calendar. A mixed universe would either
+forward fill futures across weekends, understating their volatility by roughly
+the square root of five sevenths, or discard two sevenths of the crypto
+observations. Per-instrument calendars are the prerequisite; until then crypto
+universes are crypto-only.
+
+### Costs are indicative, not net
+
+The engine's slippage is a tick count times a single universe-wide tick value,
+so it scales with quantity rather than notional. Crypto prices span five orders
+of magnitude, so one tick value cannot serve the whole universe and a
+plausible-looking configuration ends up nearly frictionless: on a real
+BTC/ETH/SOL run at 42 times annual turnover, quadrupling every configured cost
+moved annual return by 6.5 basis points. `tf.costs.crypto.CryptoCostModel`
+states spreads correctly, in basis points of notional per instrument and era,
+but the execution layer does not yet consume it. The falsification report
+detects the condition and reports it rather than presenting gross figures as
+net. Teaching the execution layer about proportional costs is the first item
+for v0.2.
+
+### There is no margin model
+
+The engine debits the full notional of every fill from cash, so a strategy is
+modelled as an unlevered cash account with implicit zero-cost financing. This is
+adequate for comparing strategies on equal terms and inadequate as a
+financing-accurate simulation of a futures programme.
+
+### Leading gaps are not data-quality failures
+
+Section 5.3 anticipated short histories but not their interaction with
+validation. Missing observations before an instrument's first price mean it did
+not exist yet, so `validate_price_data` permits them by default. Gaps inside an
+observed history are still rejected: pulling XRP daily candles from a major US
+exchange returns a 905-day hole from January 2021 to July 2023, when that venue
+suspended XRP trading, and forward filling it would have manufactured two and a
+half years of zero returns mid-sample.

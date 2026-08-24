@@ -324,10 +324,39 @@ def run_cost_stress(
             _summary_row(_run(backtester, overrides), f"{multiple:g}x costs", periods_per_year)
         )
     frame = pd.DataFrame(rows).set_index("variant")
-    frame.attrs["is_frictionless"] = bool(
-        len(frame) > 1 and frame["CAGR"].nunique() == 1
-    )
+    frame.attrs.update(_cost_bite(frame))
     return frame
+
+
+#: Annual return difference below which quadrupling costs counts as no effect.
+NEGLIGIBLE_COST_EFFECT = 0.001
+
+#: Turnover above which costs are expected to matter at all.
+MATERIAL_TURNOVER = 1.0
+
+
+def _cost_bite(frame: pd.DataFrame) -> dict[str, object]:
+    """Judge whether the cost stress actually changed anything.
+
+    Identical rows mean costs are configured at zero. Rows that barely move
+    despite heavy trading mean the cost model is calibrated too small to
+    constrain the strategy, which is the same problem wearing a disguise: the
+    net figures are effectively gross either way.
+    """
+
+    if len(frame) < 2:
+        return {"is_frictionless": False, "cost_effect": 0.0}
+
+    spread = float(frame["CAGR"].max() - frame["CAGR"].min())
+    turnover = float(frame["Turnover"].max()) if "Turnover" in frame else 0.0
+    return {
+        "is_frictionless": bool(frame["CAGR"].nunique() == 1),
+        "cost_effect": spread,
+        "costs_barely_bite": bool(
+            spread < NEGLIGIBLE_COST_EFFECT and turnover > MATERIAL_TURNOVER
+        ),
+        "turnover": turnover,
+    }
 
 
 def run_vol_lookback(
@@ -584,6 +613,18 @@ def run_falsification(
             "Transaction costs are configured at zero, so the cost stress rows "
             "are identical and the net figures above are gross. Configure "
             "execution costs before drawing any conclusion from them."
+        )
+    elif cost_stress.attrs.get("costs_barely_bite"):
+        effect = cost_stress.attrs.get("cost_effect", 0.0)
+        turnover = cost_stress.attrs.get("turnover", 0.0)
+        notes.append(
+            f"Quadrupling transaction costs changed annual return by only "
+            f"{effect:.2%} despite turnover of {turnover:.0f}x, so the cost "
+            "model is calibrated too small to constrain this strategy and the "
+            "net figures are effectively gross. The engine's slippage is a "
+            "tick count times a single universe-wide tick value, which cannot "
+            "express a proportional spread across instruments whose prices "
+            "differ by orders of magnitude. See docs/CRYPTO_DATA.md."
         )
 
     return FalsificationReport(

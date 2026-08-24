@@ -68,6 +68,44 @@ Four worked notebook examples are available in `examples/notebooks/`:
 * `attribution.ipynb` – inspect contributions, exposures and roll costs.
 * `systematic_trend_following_showcase.ipynb` – comprehensive tour of the full research toolkit.
 
+## Cryptocurrency extension
+
+`tf-trend[crypto]` applies the same engine to cryptocurrency, with the pieces
+crypto actually needs: a 7-day calendar, 365-day annualisation, point-in-time
+universe eligibility, and a falsification suite that runs by default.
+
+```bash
+tf run --config configs/crypto/tsmom_1_3_12.yaml --run-id my-run
+tf crypto falsify --config configs/crypto/tsmom_1_3_12.yaml --run-id my-run-falsify
+```
+
+Four reference strategies ship, each traceable to published research and none
+named for any manager or product:
+
+| Preset | Method |
+|---|---|
+| `mop2012_tsmom` | Sign of the trailing 12-month return, volatility scaled |
+| `tsmom_1_3_12` | Equal-weighted 1, 3, and 12-month time-series momentum |
+| `bottom_up_multisystem` | Four trend systems across thirteen horizons |
+| `btc_long_flat` | 200-day price versus moving average, long or flat |
+
+Every preset runs long/short or long/flat, so the choice stays an empirical
+question rather than a built-in assumption.
+
+`tf crypto falsify` is the part worth running. It places a result beside
+benchmarks that require no skill, re-runs it at higher costs and later signals,
+separates what the trend signal contributed from what volatility scaling
+contributed, and compares it against a placebo with randomised signal directions.
+It also reports when its own tests cannot bite, for example when transaction
+costs are configured at zero.
+
+- Methodology and evidence: [`CRYPTO_SPEC.md`](CRYPTO_SPEC.md)
+- Data schema, sourcing, licensing, and modelling limits: [`docs/CRYPTO_DATA.md`](docs/CRYPTO_DATA.md)
+
+No market data ships with this repository. The shipped configs run on synthetic
+prices so they work offline; switch `data.prefer` to `auto` with `data.strict:
+true` and supply your own data before drawing any conclusion.
+
 ## Documentation set
 
 Additional user guides live under `docs/`:
@@ -75,6 +113,7 @@ Additional user guides live under `docs/`:
 * `docs/ADD_INSTRUMENT.md` documents the metadata required when onboarding a new contract.
 * `docs/HOW_ROLL_WORKS.md` walks through the roll schedule, continuous series builder and analytics.
 * `docs/COST_MODEL_CALIBRATION.md` explains how to calibrate commissions, slippage and ADV assumptions.
+* `docs/CRYPTO_DATA.md` covers the crypto data schema, sourcing constraints and modelling limits.
 
 The top-level `README` pairs with `SPEC.md` for a condensed architectural overview.
 

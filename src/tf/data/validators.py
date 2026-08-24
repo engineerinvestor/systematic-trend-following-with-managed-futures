@@ -21,8 +21,15 @@ def validate_price_data(
     *,
     min_price: float | None = 0.0,
     max_consecutive_missing: int = 3,
+    allow_leading_gaps: bool = True,
 ) -> None:
-    """Raise if the dataframe contains obvious data quality issues."""
+    """Raise if the dataframe contains obvious data quality issues.
+
+    ``allow_leading_gaps`` ignores missing observations before an instrument's
+    first price. In a universe with staggered listings those leading NaNs mean
+    the instrument did not exist yet, which is not a data-quality problem; a gap
+    inside its observed history still is.
+    """
 
     if frame.empty:
         raise ValueError("Price dataframe is empty")
@@ -46,7 +53,14 @@ def validate_price_data(
         return
 
     for column in frame.columns:
-        _ensure_gap_limit(column, missing_mask[column], max_consecutive_missing)
+        mask = missing_mask[column]
+        if allow_leading_gaps:
+            observed = ~mask
+            if not observed.any():
+                raise ValueError(f"Column '{column}' has no observations at all")
+            first_observation = observed.idxmax()
+            mask = mask.loc[first_observation:]
+        _ensure_gap_limit(column, mask, max_consecutive_missing)
 
 
 def detect_trading_suspensions(

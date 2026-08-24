@@ -217,3 +217,36 @@ def test_total_cost_is_monotonic_in_the_multiplier() -> None:
     cheap = CryptoCostModel(cost_multiplier=1.0).total_cost(**kwargs)
     dear = CryptoCostModel(cost_multiplier=4.0).total_cost(**kwargs)
     assert dear > cheap
+
+
+def test_leading_gaps_are_allowed_but_interior_gaps_are_not() -> None:
+    """A late listing is not missing data; a trading suspension is."""
+
+    from tf.data.validators import validate_price_data
+
+    idx = pd.date_range("2024-01-01", periods=60, freq="D")
+    late = pd.DataFrame(
+        {"SOL": [np.nan] * 30 + list(np.arange(30, dtype=float) + 100.0)}, index=idx
+    )
+    validate_price_data(late, min_price=0.0, max_consecutive_missing=5)
+
+    with pytest.raises(ValueError, match="consecutive missing"):
+        validate_price_data(
+            late, min_price=0.0, max_consecutive_missing=5, allow_leading_gaps=False
+        )
+
+    # A hole inside the observed history is a real data-quality failure, of the
+    # kind a delisting produces.
+    suspended = pd.DataFrame({"XRP": np.arange(60, dtype=float) + 100.0}, index=idx)
+    suspended.iloc[20:40, 0] = np.nan
+    with pytest.raises(ValueError, match="consecutive missing"):
+        validate_price_data(suspended, min_price=0.0, max_consecutive_missing=5)
+
+
+def test_column_with_no_observations_is_rejected() -> None:
+    from tf.data.validators import validate_price_data
+
+    idx = pd.date_range("2024-01-01", periods=10, freq="D")
+    frame = pd.DataFrame({"BTC": np.arange(10.0) + 1, "GHOST": [np.nan] * 10}, index=idx)
+    with pytest.raises(ValueError, match="no observations"):
+        validate_price_data(frame, min_price=0.0, max_consecutive_missing=5)

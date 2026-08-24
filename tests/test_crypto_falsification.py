@@ -254,3 +254,30 @@ def test_cli_falsify_writes_a_report(tmp_path, monkeypatch) -> None:
     html = (outdir / "report.html").read_text()
     assert "Trend Signal vs. Volatility Scaling" in html
     assert "Randomised-Signal Placebo" in html
+
+
+def test_cost_bite_detects_a_negligible_cost_model() -> None:
+    """Costs too small to constrain a strategy are as misleading as no costs."""
+
+    from tf.eval.falsification import _cost_bite
+
+    barely = pd.DataFrame(
+        {"CAGR": [0.0966, 0.0964, 0.0959], "Turnover": [42.0, 42.0, 42.0]},
+        index=["1x costs", "2x costs", "4x costs"],
+    )
+    attrs = _cost_bite(barely)
+    assert attrs["costs_barely_bite"] is True
+    assert attrs["is_frictionless"] is False
+
+    biting = pd.DataFrame(
+        {"CAGR": [0.09, 0.05, -0.02], "Turnover": [42.0, 41.0, 40.0]},
+        index=["1x costs", "2x costs", "4x costs"],
+    )
+    assert _cost_bite(biting)["costs_barely_bite"] is False
+
+    # Low turnover is a reason for costs not to matter, not a warning sign.
+    quiet = pd.DataFrame(
+        {"CAGR": [0.09, 0.09, 0.09], "Turnover": [0.2, 0.2, 0.2]},
+        index=["1x costs", "2x costs", "4x costs"],
+    )
+    assert _cost_bite(quiet)["costs_barely_bite"] is False

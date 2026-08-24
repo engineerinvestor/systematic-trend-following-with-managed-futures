@@ -66,6 +66,11 @@
   The report states when transaction costs are configured at zero, when
   annualisation is left at 252, and when the placebo distribution is coarse.
 - `configs/crypto/`: runnable configs for all four presets plus a spot universe.
+- `docs/CRYPTO_DATA.md`, a README section, and a GitHub Actions workflow running
+  the suite on synthetic and fixture data only.
+- `validate_price_data(allow_leading_gaps=True)`, the default: observations
+  missing before an instrument's first price mean it was not yet listed, while
+  gaps inside its observed history are still rejected.
 
 ### Changed
 - Updated project metadata, documentation, and spec to reflect full signal coverage and current maintainer contacts.
