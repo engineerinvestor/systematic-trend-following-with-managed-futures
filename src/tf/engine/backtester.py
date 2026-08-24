@@ -109,6 +109,8 @@ class Backtester:
             u["symbol"]: float(u.get("point_value", 1.0)) for u in self.universe_meta
         }
         self._sector_map = {u["symbol"]: u.get("sector", "Unknown") for u in self.universe_meta}
+        self._observed: pd.DataFrame | None = None
+        self._eligibility_mask: pd.DataFrame | None = None
         self._contract_steps = {
             u["symbol"]: float(u.get("contract_step", 1.0)) for u in self.universe_meta
         }
@@ -416,10 +418,39 @@ class Backtester:
             vol_warmup=str(risk_cfg.get("vol_warmup", "mask")),
         )
 
+        targets = self._apply_eligibility(targets, prices, cfg)
+
         # Signals already carry their own one-bar lag; this second shift makes a
         # target computed through t executable at t+1, matching the engine's
         # next-session fill convention.
         return targets.shift(1).reindex_like(prices).fillna(0.0)
+
+    def _apply_eligibility(
+        self,
+        targets: pd.DataFrame,
+        prices: pd.DataFrame,
+        cfg: Mapping[str, object],
+    ) -> pd.DataFrame:
+        """Zero targets for instruments that were not yet eligible."""
+
+        universe_cfg = cfg.get("universe", {}) or {}
+        rule_cfg = universe_cfg.get("eligibility")
+        if not rule_cfg:
+            return targets
+
+        from ..data.eligibility import EligibilityRule, build_eligibility_mask
+
+        rule = EligibilityRule.from_config(rule_cfg)
+        observed = self._observed
+        basis = prices.where(observed) if observed is not None else prices
+        listing_dates = {
+            item["symbol"]: item.get("listing_date")
+            for item in self.universe_meta
+            if item.get("listing_date")
+        }
+        mask = build_eligibility_mask(basis, rule, listing_dates=listing_dates or None)
+        self._eligibility_mask = mask
+        return targets.where(mask.reindex_like(targets).fillna(False), 0.0)
 
     def _simulate_once(self, cfg: Mapping[str, object], *, config_hash: str) -> BacktestResults:
         backtest_cfg = cfg.get("backtest", {})
@@ -433,7 +464,18 @@ class Backtester:
         self.results_dir = results_dir
 
         prices = self.prices.loc[str(start) : str(end)].copy()
-        prices = prices.dropna(how="all", axis=1).ffill().dropna()
+        data_cfg = cfg.get("data", {}) or {}
+        prices = prices.dropna(how="all", axis=1)
+        if data_cfg.get("allow_partial_history"):
+            # Instruments listed part-way through the window keep their leading
+            # NaNs. Dropping any-NaN rows would truncate the whole backtest to
+            # the shortest history in the universe, so a BTC-and-SOL run would
+            # collapse to SOL's window and silently discard years of BTC data.
+            self._observed = prices.notna()
+            prices = prices.ffill().dropna(how="all")
+        else:
+            self._observed = None
+            prices = prices.ffill().dropna()
 
         if prices.empty:
             raise ValueError("No price data available for requested window")
@@ -485,7 +527,9 @@ class Backtester:
         cash = capital
         first_ts = dates[0]
         first_prices = prices.loc[first_ts]
-        first_asset_value = float((current_pos * first_prices * point_values).sum())
+        first_asset_value = float(
+            (current_pos * first_prices * point_values).fillna(0.0).sum()
+        )
         nav.loc[first_ts] = cash + first_asset_value
         cash_series.loc[first_ts] = cash
         pnl_series.loc[first_ts] = 0.0
@@ -646,7 +690,11 @@ class Backtester:
                         updated_queue.append(order)
                 pending_orders[sym] = updated_queue
 
-            asset_value = float((current_pos * price_today * point_values).sum())
+            # fillna guards the leading NaN prices of a not-yet-listed
+            # instrument, where a zero position times NaN would poison NAV.
+            asset_value = float(
+                (current_pos * price_today * point_values).fillna(0.0).sum()
+            )
             nav_today = cash + asset_value
             pnl_today = nav_today - prev_nav
             prev_nav = nav_today

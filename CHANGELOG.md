@@ -49,6 +49,16 @@
 - `signals.preset`, `signals.direction`, `signals.disable_trend`, and
   `risk.disable_vol_scaling` config keys. The last two decompose a result into
   its trend-signal and volatility-scaling contributions.
+- `tf.data.eligibility`: point-in-time universe membership from `min_history`,
+  `max_stale_days`, `entry_lag`, `evaluation_frequency`, and listing dates,
+  evaluated only on data available at each evaluation date, plus
+  `thin_universe_fraction` for reporting how often the universe was too small
+  to be diversified.
+- `data.allow_partial_history`, which keeps instruments whose history starts
+  part-way through the window. Without it the engine truncates the backtest to
+  the intersection of all histories, so one late listing discards years of data
+  from everything else.
+- `risk.max_asset_weight`, capping any one instrument's share of gross exposure.
 
 ### Changed
 - Updated project metadata, documentation, and spec to reflect full signal coverage and current maintainer contacts.
