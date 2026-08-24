@@ -22,6 +22,12 @@ dependencies = [
     "joblib==1.3.2",
 ]
 
+[project.optional-dependencies]
+# The crypto extension runs on the core dependency set; the extra exists so the
+# documented install path resolves and so crypto-only requirements have a home.
+crypto = []
+dev = ["pytest>=8.0"]
+
 [project.urls]
 Homepage = "https://github.com/engineerinvestor/systematic-trend-following-with-managed-futures"
 Repository = "https://github.com/engineerinvestor/systematic-trend-following-with-managed-futures"
@@ -33,3 +39,7 @@ tf = "tf.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

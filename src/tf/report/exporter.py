@@ -5,10 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping, Sequence
 
-import matplotlib.pyplot as plt
+import matplotlib
 import pandas as pd
-from matplotlib.backends.backend_pdf import PdfPages
 from tabulate import tabulate
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
 
 
 def _format_value(value: float) -> str:

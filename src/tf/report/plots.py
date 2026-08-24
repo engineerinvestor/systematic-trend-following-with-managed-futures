@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+import matplotlib
 import pandas as pd
+
+# Reports are written to files, never displayed, so the package must not
+# require a GUI backend (importing it fails on headless machines and in CI).
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
 
 
 def _ensure_dir(path: Path | str) -> Path:
