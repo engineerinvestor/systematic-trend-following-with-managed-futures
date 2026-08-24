@@ -33,10 +33,10 @@ def _cagr(nav: pd.Series, periods_per_year: int = TRADING_DAYS) -> float:
     years = periods / periods_per_year
     if years <= 0:
         return 0.0
-    if nav.iloc[-1] <= 0:
-        # The account was wiped out. Raising a non-positive ratio to a
-        # fractional power yields NaN, which reads as "no result" rather than
-        # the total loss it actually was.
+    if (nav <= 0).any():
+        # The account was wiped out somewhere on the path. There is no margin
+        # model, so a "recovery" from non-positive equity is an artefact;
+        # report the total loss rather than a normal-looking growth rate.
         return -1.0
     return float((nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1)
 
@@ -46,7 +46,9 @@ def _max_drawdown(nav: pd.Series) -> float:
         return 0.0
     running_max = nav.cummax()
     drawdown = nav / running_max - 1.0
-    return float(drawdown.min())
+    # A NAV that goes non-positive would report drawdowns below -100%, which
+    # is not a meaningful number for an unlevered accounting of losses.
+    return float(max(drawdown.min(), -1.0))
 
 
 def performance_summary(
@@ -61,6 +63,11 @@ def performance_summary(
     ``periods_per_year`` sets the annualisation factor. Use 365 for a series
     sampled on a 7-day calendar; leaving it at 252 there understates volatility
     by about 20 percent.
+
+    ``Turnover`` is total traded notional divided by mean NAV over the whole
+    backtest; ``Turnover (ann.)`` divides that by the window length in years.
+    Sharpe uses no risk-free rate. ``Hit Rate`` is the fraction of positive
+    daily returns, not per-trade.
     """
 
     if nav.empty:
@@ -74,6 +81,7 @@ def performance_summary(
             "Skew": 0.0,
             "Kurtosis": 0.0,
             "Turnover": 0.0,
+            "Turnover (ann.)": 0.0,
             "Hit Rate": 0.0,
         }
 
@@ -90,10 +98,14 @@ def performance_summary(
         if not downside.empty
         else 0.0
     )
-    sortino = ann_return / downside_std if downside_std > 0 else 0.0
+    # A window with no losing day has an undefined Sortino, and one that never
+    # went underwater has an undefined Calmar. Reporting 0.0 there labels the
+    # best possible outcome with the worst-looking number, and short
+    # out-of-sample folds hit these cases routinely.
+    sortino = ann_return / downside_std if downside_std > 0 else float("nan")
 
     maxdd = _max_drawdown(nav)
-    calmar = cagr / abs(maxdd) if maxdd < 0 else 0.0
+    calmar = cagr / abs(maxdd) if maxdd < 0 else float("nan")
 
     skew = float(returns.skew()) if not returns.empty else 0.0
     kurt = float(returns.kurtosis()) if not returns.empty else 0.0
@@ -109,6 +121,9 @@ def performance_summary(
 
     hit_rate = float((returns > 0).mean()) if not returns.empty else 0.0
 
+    periods = max(len(nav) - 1, 1)
+    turnover_ann = float(turnover) * periods_per_year / periods
+
     return {
         "CAGR": float(cagr),
         "Volatility": float(vol),
@@ -119,6 +134,7 @@ def performance_summary(
         "Skew": float(skew),
         "Kurtosis": float(kurt),
         "Turnover": float(turnover),
+        "Turnover (ann.)": turnover_ann,
         "Hit Rate": float(hit_rate),
     }
 

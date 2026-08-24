@@ -37,6 +37,9 @@ class WalkForwardResult:
 
     window: WalkForwardWindow
     backtest: "BacktestResults"
+    #: Annualisation basis for the summaries; must match the basis the
+    #: strategy was sized on (365 for a 7-day crypto calendar).
+    periods_per_year: int = 252
 
     @property
     def insample_nav(self) -> pd.Series:
@@ -48,11 +51,15 @@ class WalkForwardResult:
 
     @property
     def insample_summary(self) -> dict[str, float]:
-        return performance_summary(self.insample_nav)
+        return performance_summary(
+            self.insample_nav, periods_per_year=self.periods_per_year
+        )
 
     @property
     def oos_summary(self) -> dict[str, float]:
-        return performance_summary(self.oos_nav)
+        return performance_summary(
+            self.oos_nav, periods_per_year=self.periods_per_year
+        )
 
 
 def _resolve_index(index: Iterable[pd.Timestamp]) -> pd.DatetimeIndex:

@@ -150,9 +150,9 @@ scales with quantity rather than with notional. That is workable for a futures
 universe whose contracts are similar in size, and wrong for crypto, where BTC
 near $60,000 and XRP near $0.50 differ by five orders of magnitude: one
 `tick_value` cannot be meaningful for both. In practice a plausible-looking
-configuration ends up nearly frictionless. On a real BTC/ETH/SOL run at 42 times
-annual turnover, quadrupling every configured cost changed annual return by 6.5
-basis points.
+configuration ends up nearly frictionless. On a real BTC/ETH/SOL run turning over
+roughly 9 times per year (43x over that five-year window), quadrupling every
+configured cost changed annual return by 6.5 basis points.
 
 The falsification report detects this and says so, rather than presenting the
 result as net of costs. `tf.costs.crypto.CryptoCostModel` states spreads the

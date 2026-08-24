@@ -288,7 +288,15 @@ class Backtester:
             raise RuntimeError("Unexpected mismatch between walk-forward windows and results")
 
         return [
-            WalkForwardResult(window=window, backtest=result)
+            WalkForwardResult(
+                window=window,
+                backtest=result,
+                periods_per_year=int(
+                    (self._base_cfg.get("risk", {}) or {}).get(
+                        "periods_per_year", TRADING_DAYS
+                    )
+                ),
+            )
             for window, result in zip(windows, results, strict=True)
         ]
 

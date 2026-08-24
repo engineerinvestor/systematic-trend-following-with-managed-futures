@@ -331,8 +331,8 @@ def run_cost_stress(
 #: Annual return difference below which quadrupling costs counts as no effect.
 NEGLIGIBLE_COST_EFFECT = 0.001
 
-#: Turnover above which costs are expected to matter at all.
-MATERIAL_TURNOVER = 1.0
+#: Annualised turnover above which costs are expected to matter at all.
+MATERIAL_ANNUAL_TURNOVER = 1.0
 
 
 def _cost_bite(frame: pd.DataFrame) -> dict[str, object]:
@@ -348,14 +348,16 @@ def _cost_bite(frame: pd.DataFrame) -> dict[str, object]:
         return {"is_frictionless": False, "cost_effect": 0.0}
 
     spread = float(frame["CAGR"].max() - frame["CAGR"].min())
-    turnover = float(frame["Turnover"].max()) if "Turnover" in frame else 0.0
+    turnover_ann = (
+        float(frame["Turnover (ann.)"].max()) if "Turnover (ann.)" in frame else 0.0
+    )
     return {
         "is_frictionless": bool(frame["CAGR"].nunique() == 1),
         "cost_effect": spread,
         "costs_barely_bite": bool(
-            spread < NEGLIGIBLE_COST_EFFECT and turnover > MATERIAL_TURNOVER
+            spread < NEGLIGIBLE_COST_EFFECT and turnover_ann > MATERIAL_ANNUAL_TURNOVER
         ),
-        "turnover": turnover,
+        "turnover_ann": turnover_ann,
     }
 
 
@@ -616,10 +618,10 @@ def run_falsification(
         )
     elif cost_stress.attrs.get("costs_barely_bite"):
         effect = cost_stress.attrs.get("cost_effect", 0.0)
-        turnover = cost_stress.attrs.get("turnover", 0.0)
+        turnover = cost_stress.attrs.get("turnover_ann", 0.0)
         notes.append(
             f"Quadrupling transaction costs changed annual return by only "
-            f"{effect:.2%} despite turnover of {turnover:.0f}x, so the cost "
+            f"{effect:.2%} despite annualised turnover of {turnover:.1f}x, so the cost "
             "model is calibrated too small to constrain this strategy and the "
             "net figures are effectively gross. The engine's slippage is a "
             "tick count times a single universe-wide tick value, which cannot "

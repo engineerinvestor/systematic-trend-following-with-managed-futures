@@ -54,7 +54,10 @@ def _sharpe_ratio(sample: np.ndarray, periods_per_year: int = TRADING_DAYS) -> f
     mean = sample.mean()
     std = sample.std(ddof=1)
     if std == 0:
-        return 0.0
+        # A degenerate resample (all-identical returns) has an undefined
+        # Sharpe; a 0.0 here would be averaged into the interval and bias it
+        # toward zero, so it is dropped by the NaN-aware aggregation below.
+        return float("nan")
     return float(np.sqrt(periods_per_year) * mean / std)
 
 
@@ -120,10 +123,15 @@ def bootstrap_confidence_intervals(
         if fn is None:
             raise KeyError(f"Unsupported metric '{metric}'. Available: {list(_METRIC_FUNCTIONS)}")
         stats = np.apply_along_axis(fn, 1, samples, periods_per_year)
+        finite = stats[np.isfinite(stats)]
+        if finite.size == 0:
+            raise ValueError(
+                f"All bootstrap resamples were degenerate for metric '{metric}'"
+            )
         interval = BootstrapInterval(
-            mean=float(np.mean(stats)),
-            lower=float(np.percentile(stats, lower_q)),
-            upper=float(np.percentile(stats, upper_q)),
+            mean=float(np.mean(finite)),
+            lower=float(np.percentile(finite, lower_q)),
+            upper=float(np.percentile(finite, upper_q)),
         )
         estimates[metric] = interval
 

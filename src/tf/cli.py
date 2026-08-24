@@ -22,7 +22,7 @@ from .eval.analytics import (
     compute_sector_contributions,
     normalise_totals,
 )
-from .eval.metrics import compute_rolling_metrics, performance_summary
+from .eval.metrics import TRADING_DAYS, compute_rolling_metrics, performance_summary
 from .report.exporter import write_html, write_pdf
 from .report.plots import (
     plot_contribution_breakdown,
@@ -83,6 +83,23 @@ def _prepare_run_directory(context: api.BacktestContext, run_id: str) -> Path:
     return outdir
 
 
+def _periods_per_year_from(config: Mapping[str, Any]) -> int:
+    """Annualisation basis from ``risk.periods_per_year`` (default 252).
+
+    Positions are sized on this basis, so reports must use the same one; a
+    crypto config sized at 365 and reported at 252 understates volatility and
+    Sharpe by about 17 percent.
+    """
+
+    risk_cfg = config.get("risk", {})
+    if isinstance(risk_cfg, Mapping):
+        try:
+            return int(risk_cfg.get("periods_per_year", TRADING_DAYS))
+        except (TypeError, ValueError):
+            return TRADING_DAYS
+    return TRADING_DAYS
+
+
 def _write_backtest_outputs(
     result: BacktestResults,
     *,
@@ -107,7 +124,10 @@ def _write_backtest_outputs(
     roll_costs = compute_roll_cost_breakdown(result.trades, result.costs)
     report_cfg = config.get("report", {}) if isinstance(config.get("report", {}), Mapping) else {}
     rolling_window = int(report_cfg.get("rolling_window", 126))
-    rolling_stats = compute_rolling_metrics(result.nav, window=rolling_window)
+    periods_per_year = _periods_per_year_from(config)
+    rolling_stats = compute_rolling_metrics(
+        result.nav, window=rolling_window, periods_per_year=periods_per_year
+    )
 
     if not contributions.empty:
         _export_table(contributions, outdir / "contributions", "Contributions")
@@ -120,7 +140,12 @@ def _write_backtest_outputs(
     if not rolling_stats.empty:
         _export_table(rolling_stats, outdir / "rolling_stats", "Rolling Metrics")
 
-    summary = performance_summary(result.nav, pnl=result.pnl, trades=result.trades)
+    summary = performance_summary(
+        result.nav,
+        pnl=result.pnl,
+        trades=result.trades,
+        periods_per_year=periods_per_year,
+    )
     (outdir / "summary.json").write_text(json.dumps(summary, indent=2))
 
     charts: list[tuple[str, str]] = []

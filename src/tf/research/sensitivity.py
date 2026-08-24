@@ -6,8 +6,15 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequenc
 
 import pandas as pd
 
-from ..eval.metrics import performance_summary
+from ..eval.metrics import TRADING_DAYS, performance_summary
 from ..engine.backtester import Backtester
+
+
+def _periods_per_year(backtester: "Backtester") -> int:
+    """Annualisation basis the backtester's config sized positions on."""
+
+    risk_cfg = backtester._base_cfg.get("risk", {}) or {}
+    return int(risk_cfg.get("periods_per_year", TRADING_DAYS))
 
 
 def _to_overrides(parameter: str, value) -> dict:
@@ -60,7 +67,11 @@ def compute_metric_sensitivity(
         overrides = _to_overrides(parameter, override_value)
         combined = _merge_overrides(base_overrides, overrides)
         res = backtester.run(parameter_overrides=combined, seed=seed)
-        summary = performance_summary(res.nav)
+        summary = performance_summary(
+            res.nav,
+            trades=res.trades,
+            periods_per_year=_periods_per_year(backtester),
+        )
         records.append({"parameter": value, metric: summary.get(metric, float("nan"))})
     frame = pd.DataFrame(records)
     return frame.set_index("parameter")
@@ -79,7 +90,7 @@ def lookback_sensitivity(
     records = []
     for lb, overrides in zip(lookbacks, values, strict=True):
         res = backtester.run(parameter_overrides=overrides, seed=seed)
-        summary = performance_summary(res.nav)
+        summary = performance_summary(res.nav, trades=res.trades, periods_per_year=_periods_per_year(backtester))
         records.append({"lookback": lb, metric: summary.get(metric, float("nan"))})
     return pd.DataFrame(records).set_index("lookback")
 
@@ -97,6 +108,6 @@ def vol_target_sensitivity(
     for target in targets:
         overrides = {"risk": {"target_portfolio_vol": float(target)}}
         res = backtester.run(parameter_overrides=overrides, seed=seed)
-        summary = performance_summary(res.nav)
+        summary = performance_summary(res.nav, trades=res.trades, periods_per_year=_periods_per_year(backtester))
         records.append({"vol_target": target, metric: summary.get(metric, float("nan"))})
     return pd.DataFrame(records).set_index("vol_target")

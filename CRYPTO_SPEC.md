@@ -464,8 +464,8 @@ The engine's slippage is a tick count times a single universe-wide tick value,
 so it scales with quantity rather than notional. Crypto prices span five orders
 of magnitude, so one tick value cannot serve the whole universe and a
 plausible-looking configuration ends up nearly frictionless: on a real
-BTC/ETH/SOL run at 42 times annual turnover, quadrupling every configured cost
-moved annual return by 6.5 basis points. `tf.costs.crypto.CryptoCostModel`
+BTC/ETH/SOL run turning over roughly 9 times per year, quadrupling every
+configured cost moved annual return by 6.5 basis points. `tf.costs.crypto.CryptoCostModel`
 states spreads correctly, in basis points of notional per instrument and era,
 but the execution layer does not yet consume it. The falsification report
 detects the condition and reports it rather than presenting gross figures as
