@@ -1,0 +1,47 @@
+# Cryptocurrency spot reference universe.
+#
+# These are spot reference series used to compute signals. point_value is 1 and
+# contract_step is fractional because spot is sized in coins, not contracts.
+# For a CME futures implementation use tf.data.cme_crypto.build_universe(),
+# which carries contract sizes, tick sizes, and the venue session calendar.
+#
+# listing_date is the CME futures listing, used by the point-in-time
+# eligibility rule. No market data ships with this repository; see
+# docs/CRYPTO_DATA.md for sourcing.
+symbols:
+  - symbol: BTC
+    sector: Crypto
+    point_value: 1.0
+    contract_step: 0.0001
+    calendar: CRYPTO_DAILY
+    data_source: yahoo
+    data_symbol: BTC-USD
+    listing_date: "2017-12-18"
+    description: Bitcoin spot reference price
+  - symbol: ETH
+    sector: Crypto
+    point_value: 1.0
+    contract_step: 0.001
+    calendar: CRYPTO_DAILY
+    data_source: yahoo
+    data_symbol: ETH-USD
+    listing_date: "2021-02-08"
+    description: Ether spot reference price
+  - symbol: SOL
+    sector: Crypto
+    point_value: 1.0
+    contract_step: 0.01
+    calendar: CRYPTO_DAILY
+    data_source: yahoo
+    data_symbol: SOL-USD
+    listing_date: "2025-03-17"
+    description: Solana spot reference price
+  - symbol: XRP
+    sector: Crypto
+    point_value: 1.0
+    contract_step: 1.0
+    calendar: CRYPTO_DAILY
+    data_source: yahoo
+    data_symbol: XRP-USD
+    listing_date: "2025-05-19"
+    description: XRP spot reference price

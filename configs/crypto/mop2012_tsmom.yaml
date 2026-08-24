@@ -1,0 +1,54 @@
+# Single-horizon time-series momentum: the sign of the trailing 12-month
+# return, volatility scaled. See CRYPTO_SPEC.md section 4.1.
+
+data:
+  calendar: CRYPTO_DAILY
+  allow_partial_history: true
+  prefer: synthetic          # set to "auto" to use your own vendor data
+  strict: false              # set true to forbid the synthetic fallback
+
+universe:
+  assets_file: ./configs/crypto/universe.yaml
+  eligibility:
+    min_history: 365D
+    max_stale_days: 1
+    evaluation_frequency: monthly
+    entry_lag: 30D
+
+signals:
+  preset: mop2012_tsmom
+  horizons: ["365D"]
+  direction: long_short      # or long_flat
+  lag: 1
+
+risk:
+  vol_model: ewma
+  ewma_center_of_mass: 60    # Moskowitz, Ooi, Pedersen use a 60-day centre of mass
+  periods_per_year: 365      # crypto trades every calendar day
+  min_vol_periods: 30
+  target_portfolio_vol: 0.10
+  gross_exposure_limit: 3.0
+  max_asset_weight: 0.5
+  rebalance_threshold: 0.05
+  risk_allocator: proportional
+  sector_caps: {Crypto: 1.0}
+
+execution:
+  order_type: market_next_open
+  adv_limit_pct: 0.2
+  adv_contracts: {BTC: 20000, ETH: 20000, SOL: 20000, XRP: 20000}
+  commission_per_contract: 0.0
+  impact:
+    model: participation
+    k: 0.02
+    alpha: 0.5
+  min_slippage_ticks: 0.5
+  tick_value: 0.01
+
+backtest:
+  start: "2018-01-01"
+  end: "2024-12-31"
+  starting_nav: 1000000.0
+  rebalance: daily
+  seed: 42
+  results_dir: "./results"

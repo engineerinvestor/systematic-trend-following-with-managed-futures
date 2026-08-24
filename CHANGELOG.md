@@ -59,6 +59,13 @@
   the intersection of all histories, so one late listing discards years of data
   from everything else.
 - `risk.max_asset_weight`, capping any one instrument's share of gross exposure.
+- `tf.eval.falsification` and `tf crypto falsify`: benchmark battery, the trend
+  signal versus volatility scaling 2x2, signal-delay and cost stress, volatility
+  lookback sensitivity, leave-one-asset-out, a randomised-sign placebo, long and
+  short attribution reconciled to net, and a per-instrument data-span panel.
+  The report states when transaction costs are configured at zero, when
+  annualisation is left at 252, and when the placebo distribution is coarse.
+- `configs/crypto/`: runnable configs for all four presets plus a spot universe.
 
 ### Changed
 - Updated project metadata, documentation, and spec to reflect full signal coverage and current maintainer contacts.
@@ -75,6 +82,10 @@
   until its volatility estimate is warm. This changes backtest results in the
   first `min_vol_periods` observations; pass `vol_warmup="bfill"` to reproduce
   the old numbers.
+- **`performance_summary` returned NaN for a wiped-out account.** Raising a
+  non-positive terminal NAV to a fractional power yields NaN, which reads as no
+  result rather than the total loss it was; CAGR now reports -1.0 and turnover
+  no longer goes negative on a negative mean NAV.
 - **`channel_breakout` could not detect a breakout.** Its rolling window
   included the current bar, so price was always inside the channel and the raw
   ratio was confined to [-0.5, +0.5], bounded near 0.165 after the tanh, an

@@ -346,6 +346,53 @@ def cmd_walkforward(args: argparse.Namespace) -> None:
     rprint(f"[bold green]Walk-forward complete[/bold green]. Results in {base_dir}")
 
 
+def cmd_crypto_falsify(args: argparse.Namespace) -> None:
+    """Run the falsification suite and write its report bundle."""
+
+    from .eval.falsification import run_falsification
+
+    backtester, context = api.prepare_backtester(
+        args.config, price_seed=args.price_seed
+    )
+    report = run_falsification(
+        backtester, placebo_draws=args.placebo_draws, seed=args.seed
+    )
+
+    outdir = _prepare_run_directory(context, args.run_id)
+    tables = report.tables()
+    for title, frame in tables:
+        if frame.empty:
+            continue
+        slug = title.lower().replace(" ", "_").replace(".", "").replace("/", "_")
+        _export_table(frame.reset_index(), outdir / slug, title)
+
+    metadata = {"run_id": args.run_id, "report": "falsification"}
+    for index, note in enumerate(report.notes, start=1):
+        metadata[f"note_{index}"] = note
+
+    write_html(
+        outdir,
+        _headline_summary(report),
+        tables=[(title, frame) for title, frame in tables if not frame.empty],
+        charts=[],
+        metadata=metadata,
+    )
+
+    rprint(f"[bold green]Falsification report written[/bold green] to {outdir}")
+    for note in report.notes:
+        rprint(f"[yellow]Note:[/yellow] {note}")
+
+
+def _headline_summary(report) -> dict[str, float]:
+    """Pull the strategy row out of the benchmark table for the report header."""
+
+    variants = report.variants
+    if variants.empty or "strategy" not in variants.index:
+        return {}
+    row = variants.loc["strategy"]
+    return {str(k): float(v) for k, v in row.items()}
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="tf", description="Trend Following Backtester")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -387,6 +434,25 @@ def main(argv: Sequence[str] | None = None) -> None:
     p_wf.add_argument("--n-jobs", type=int)
     p_wf.add_argument("--prefer", choices=["processes", "threads"], help="Parallel backend preference")
     p_wf.set_defaults(func=cmd_walkforward)
+
+    p_crypto = sub.add_parser("crypto", help="Cryptocurrency extension commands")
+    crypto_sub = p_crypto.add_subparsers(dest="crypto_cmd", required=True)
+
+    p_fals = crypto_sub.add_parser(
+        "falsify",
+        help="Run the falsification suite: benchmarks, stress tests, and a placebo",
+    )
+    p_fals.add_argument("--config", default="configs/crypto/tsmom_1_3_12.yaml")
+    p_fals.add_argument("--run-id", default="falsify-001")
+    p_fals.add_argument(
+        "--placebo-draws",
+        type=int,
+        default=1_000,
+        help="Randomised-signal draws (lower is faster and noisier)",
+    )
+    p_fals.add_argument("--seed", type=int, default=0)
+    p_fals.add_argument("--price-seed", type=int, help="Override the synthetic price seed")
+    p_fals.set_defaults(func=cmd_crypto_falsify)
 
     args = parser.parse_args(argv)
     try:

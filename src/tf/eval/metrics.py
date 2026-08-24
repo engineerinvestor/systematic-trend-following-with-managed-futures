@@ -27,12 +27,17 @@ def _annualise_vol(returns: pd.Series, periods_per_year: int = TRADING_DAYS) -> 
 
 
 def _cagr(nav: pd.Series, periods_per_year: int = TRADING_DAYS) -> float:
-    if len(nav) < 2 or (nav.iloc[0] == 0):
+    if len(nav) < 2 or (nav.iloc[0] <= 0):
         return 0.0
     periods = len(nav) - 1
     years = periods / periods_per_year
     if years <= 0:
         return 0.0
+    if nav.iloc[-1] <= 0:
+        # The account was wiped out. Raising a non-positive ratio to a
+        # fractional power yields NaN, which reads as "no result" rather than
+        # the total loss it actually was.
+        return -1.0
     return float((nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1)
 
 
@@ -94,8 +99,11 @@ def performance_summary(
     kurt = float(returns.kurtosis()) if not returns.empty else 0.0
 
     turnover = np.nan
-    if trades is not None and not trades.empty and "notional" in trades and nav.mean() != 0:
-        turnover = float(trades["notional"].abs().sum() / nav.mean())
+    # Guard on the mean's magnitude: a NAV that went negative would otherwise
+    # produce a negative turnover, which is meaningless.
+    mean_nav = float(nav.mean())
+    if trades is not None and not trades.empty and "notional" in trades and mean_nav > 0:
+        turnover = float(trades["notional"].abs().sum() / mean_nav)
     if not np.isfinite(turnover):
         turnover = 0.0
 
