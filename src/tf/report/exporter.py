@@ -65,6 +65,10 @@ def write_html(
         metadata_rows = tabulate(metadata.items(), headers=["Key", "Value"], tablefmt="html")
         metadata_html = f"<h2>Run Metadata</h2>\n{metadata_rows}"
 
+    charts_section = (
+        "<h2>Visualisations</h2>\n" + charts_html if charts_html else ""
+    )
+
     html = f"""
     <html>
       <head>
@@ -85,14 +89,13 @@ def write_html(
         <h2>Performance Summary</h2>
         {summary_table}
         {extra_tables}
-        <h2>Visualisations</h2>
-        {charts_html}
+        {charts_section}
       </body>
     </html>
     """
 
     report_path = report_dir / "report.html"
-    report_path.write_text(html)
+    report_path.write_text(html, encoding="utf-8")
     return report_path
 
 

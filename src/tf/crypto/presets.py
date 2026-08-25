@@ -60,6 +60,24 @@ class Preset:
     reference: str
     options: Mapping[str, object] = field(default_factory=dict)
 
+    def accepted_options(self) -> frozenset[str]:
+        """Keyword options this preset's builder understands.
+
+        The engine uses this to drop stray config keys (for example a
+        ``systems`` list left over from another preset) instead of letting
+        them raise deep inside a benchmark run.
+        """
+
+        import inspect
+
+        params = inspect.signature(self.builder).parameters
+        return frozenset(
+            name
+            for name, param in params.items()
+            if param.kind is inspect.Parameter.KEYWORD_ONLY
+            and name not in {"horizons", "lag"}
+        )
+
     def build(
         self,
         prices: pd.DataFrame,

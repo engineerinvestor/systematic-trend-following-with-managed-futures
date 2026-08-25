@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import hashlib
 import json
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ import pandas as pd
 from ..portfolio.sizing import volatility_target_positions
 from ..eval.metrics import TRADING_DAYS
 from ..signals.momentum import timeseries_momentum
+
+logger = logging.getLogger(__name__)
 from .execution import (
     Order,
     RollEngine,
@@ -352,22 +355,42 @@ class Backtester:
 
         preset = sig_cfg.get("preset")
         if preset:
-            from ..crypto.presets import build_signals
+            from ..crypto.presets import build_signals, get_preset
 
             data_cfg = cfg.get("data", {}) or {}
             freq = "daily" if _is_daily_calendar(data_cfg.get("calendar")) else "weekday"
-            options = {
-                key: value
-                for key, value in sig_cfg.items()
-                if key not in {"preset", "horizons", "direction", "lag", "momentum", "disable_trend"}
-            }
+            reserved = {"preset", "horizons", "direction", "lag", "momentum", "disable_trend"}
+            accepted = get_preset(str(preset)).accepted_options()
+            options = {}
+            for key, value in sig_cfg.items():
+                if key in reserved:
+                    continue
+                if key in accepted:
+                    options[key] = value
+                else:
+                    # A leftover key from another preset (a benchmark override
+                    # switching presets inherits the base config's block) must
+                    # not detonate deep inside the builder, but it must not
+                    # vanish silently either.
+                    logger.warning(
+                        "Ignoring signals.%s: preset %r does not accept it",
+                        key,
+                        preset,
+                    )
+            lag = int(sig_cfg.get("lag", 1))
+            if lag < 1:
+                raise ValueError(
+                    f"signals.lag must be at least 1 in a backtest config, got {lag}. "
+                    "Zero-lag signals are only available to library callers doing "
+                    "research on the signal itself."
+                )
             return build_signals(
                 prices,
                 str(preset),
                 freq=freq,
                 direction=str(sig_cfg.get("direction", "long_short")),
                 horizons=sig_cfg.get("horizons"),
-                lag=int(sig_cfg.get("lag", 1)),
+                lag=lag,
                 **options,
             )
 
@@ -376,6 +399,7 @@ class Backtester:
             prices,
             lookbacks=tuple(momentum_cfg.get("lookbacks", [63, 126, 252])),
             skip_last_n=int(momentum_cfg.get("skip_last_n", 20)),
+            lag=max(int(sig_cfg.get("lag", 1)), 1),
         )
 
     def _build_targets(
@@ -396,9 +420,18 @@ class Backtester:
         periods_per_year = int(risk_cfg.get("periods_per_year", TRADING_DAYS))
 
         if risk_cfg.get("disable_vol_scaling"):
-            # Equal-risk-free sizing: every active instrument takes the same
-            # notional weight, so any remaining edge is the signal's alone.
-            volatility = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
+            # No volatility information enters sizing: a constant fake vol makes
+            # weight_i = budget_i * gross. The constant is chosen so the book is
+            # fully invested (gross = 1) rather than the accidental
+            # target_vol-sized book a vol of 1.0 produced, which made the 2x2's
+            # CAGR and drawdown cells leverage artefacts. Note the budget is
+            # proportional to |signal| under the default allocator, so weights
+            # are equal-notional only when signals are equal-magnitude.
+            gross_level = float(risk_cfg.get("disable_vol_scaling_gross", 1.0))
+            constant = float(risk_cfg.get("target_portfolio_vol", 0.15)) / gross_level
+            volatility = pd.DataFrame(
+                constant, index=prices.index, columns=prices.columns
+            )
         else:
             volatility = None
 

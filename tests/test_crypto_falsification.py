@@ -94,8 +94,26 @@ def test_vol_scaling_2x2_covers_every_cell(tmp_path) -> None:
     assert frame.loc[("yes", "yes"), "CAGR"] != frame.loc[("no", "yes"), "CAGR"]
 
 
-def test_placebo_mean_sharpe_is_near_zero() -> None:
-    """A signal stripped of direction must have no expected edge."""
+def test_placebo_enumerates_exactly_and_excludes_the_strategy() -> None:
+    """The null must not contain the strategy, and small spaces are exact."""
+
+    prices = _prices(("BTC", "ETH"))
+    signals = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
+    frame = run_placebo(
+        prices, signals, periods_per_year=365, target_vol=0.1,
+        starting_nav=1_000_000.0, draws=50, seed=1,
+    )
+    row = frame.loc["Sharpe"]
+    # Two instruments -> 2^2 - 1 = 3 non-identity variants, enumerated exactly.
+    assert row["variants"] == 3
+    assert row["method"] == "exact enumeration"
+    assert frame.attrs["distinct_sign_combinations"] == 4
+    assert frame.attrs["is_coarse"] is True
+    assert "of 3" in row["beats_n_of"]
+
+
+def test_placebo_null_mean_is_centred() -> None:
+    """With the identity excluded the enumerated null is near-symmetric."""
 
     prices = _prices(("BTC", "ETH", "SOL", "XRP"), seed=5)
     rng = np.random.default_rng(0)
@@ -108,25 +126,12 @@ def test_placebo_mean_sharpe_is_near_zero() -> None:
         periods_per_year=365,
         target_vol=0.10,
         starting_nav=1_000_000.0,
-        draws=64,
         seed=3,
     )
     row = frame.loc["Sharpe"]
-    # The placebo distribution is symmetric about zero by construction, so its
-    # mean must sit within a fraction of its own spread of zero.
-    assert abs(row["placebo_mean"]) < 0.5 * max(row["placebo_std"], 1e-9)
-
-
-def test_placebo_reports_its_own_coarseness() -> None:
-    prices = _prices(("BTC", "ETH"))
-    signals = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
-    frame = run_placebo(
-        prices, signals, periods_per_year=365, target_vol=0.1,
-        starting_nav=1_000_000.0, draws=50, seed=1,
-    )
-    # Two instruments allow only four distinct sign combinations.
-    assert frame.loc["Sharpe", "distinct_sign_combinations"] == 4
-    assert frame.attrs["is_coarse"] is True
+    assert row["method"] == "exact enumeration"
+    assert row["variants"] == 15  # 2^4 - 1
+    assert abs(row["placebo_mean"]) < max(row["placebo_std"], 1e-9)
 
 
 def test_fast_nav_path_tracks_the_direction_of_a_trend() -> None:
@@ -285,3 +290,101 @@ def test_cost_bite_detects_a_negligible_cost_model() -> None:
         index=["1x costs", "2x costs", "4x costs"],
     )
     assert _cost_bite(quiet)["costs_barely_bite"] is False
+
+
+def test_benchmark_battery_survives_the_multisystem_config(tmp_path) -> None:
+    """R3 regression: a stray `systems` key must not silently drop benchmarks."""
+
+    prices = _prices(("BTC", "ETH"))
+    universe = [
+        {"symbol": s, "sector": "Crypto", "point_value": 1.0, "contract_step": 1e-4}
+        for s in ("BTC", "ETH")
+    ]
+    cfg = _config(tmp_path)
+    cfg["signals"] = {
+        "preset": "bottom_up_multisystem",
+        "horizons": [10, 30, 90],
+        "systems": ["total_return", "pmac"],
+    }
+    report = run_falsification(Backtester(prices, universe, cfg), seed=0)
+    variants = list(report.variants.index)
+    assert any(v.startswith("200-day long/flat") and "FAILED" not in v for v in variants)
+    assert any(v.startswith("single 12-month horizon") and "FAILED" not in v for v in variants)
+
+
+def test_long_flat_benchmark_actually_uses_200_days(tmp_path) -> None:
+    """R2 regression: the benchmark must not inherit the base config's horizons.
+
+    A 200-day rule and a 30-day rule produce different NAV paths on the same
+    data; if the override inherited `horizons: ["30D", ...]` the two runs below
+    would be identical.
+    """
+
+    prices = _prices(("BTC", "ETH"))
+    universe = [
+        {"symbol": s, "sector": "Crypto", "point_value": 1.0, "contract_step": 1e-4}
+        for s in ("BTC", "ETH")
+    ]
+    cfg = _config(tmp_path)  # base horizons are 30/90/365
+    bt = Backtester(prices, universe, cfg)
+
+    bench = bt.run(parameter_overrides={
+        "signals": {"preset": "btc_long_flat", "direction": "long_flat", "horizons": [200]}
+    })
+    thirty = bt.run(parameter_overrides={
+        "signals": {"preset": "btc_long_flat", "direction": "long_flat", "horizons": [30]}
+    })
+    assert not bench.nav.equals(thirty.nav)
+
+
+def test_buy_and_hold_weights_drift() -> None:
+    """R4 regression: true buy-and-hold differs from daily rebalancing."""
+
+    from tf.eval.falsification import rebalanced_equal_weight_nav
+
+    idx = pd.date_range("2024-01-01", periods=300, freq="D")
+    # One asset triples while the other halves: drifting weights and daily
+    # rebalancing must diverge materially.
+    prices = pd.DataFrame(
+        {"A": np.linspace(100, 300, 300), "B": np.linspace(100, 50, 300)}, index=idx
+    )
+    held = buy_and_hold_nav(prices, starting_nav=1000.0)
+    rebal = rebalanced_equal_weight_nav(prices, starting_nav=1000.0)
+
+    # Hand-computed buy and hold: 5 units of A + 5 units of B.
+    assert held.iloc[-1] == pytest.approx(5 * 300 + 5 * 50)
+    assert abs(held.iloc[-1] - rebal.iloc[-1]) / held.iloc[-1] > 0.02
+
+
+def test_fast_path_detects_an_injected_lookahead() -> None:
+    """The placebo machinery must be able to see information when it exists.
+
+    A signal that peeks one day ahead on a random walk has genuine information;
+    if the fast path's internal lag neutralised it (or a future edit introduced
+    a compensating shift), the falsification suite would be structurally unable
+    to detect skill, making every 'no edge' conclusion vacuous.
+    """
+
+    idx = pd.date_range("2019-01-01", periods=1500, freq="D")
+    rng = np.random.default_rng(42)
+    returns = rng.normal(0.0, 0.02, size=len(idx))
+    prices = pd.DataFrame({"BTC": 100 * np.exp(np.cumsum(returns))}, index=idx)
+
+    honest = pd.DataFrame(
+        {"BTC": np.sign(pd.Series(returns, index=idx).rolling(30).sum())}, index=idx
+    ).fillna(0.0)
+    # Peeker: tomorrow's return sign, shifted so that even after the fast
+    # path's one-bar execution lag it still trades on future information.
+    peeker = pd.DataFrame({"BTC": np.sign(returns)}, index=idx).shift(-1).fillna(0.0)
+
+    honest_sharpe = performance_summary(
+        fast_nav_from_signals(prices, honest, periods_per_year=365),
+        periods_per_year=365,
+    )["Sharpe"]
+    peeker_sharpe = performance_summary(
+        fast_nav_from_signals(prices, peeker, periods_per_year=365),
+        periods_per_year=365,
+    )["Sharpe"]
+
+    assert peeker_sharpe > 5.0          # perfect foresight is unmistakable
+    assert abs(honest_sharpe) < 1.5     # a trend rule on a random walk is not

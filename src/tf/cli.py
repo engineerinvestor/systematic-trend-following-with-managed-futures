@@ -389,7 +389,7 @@ def cmd_crypto_falsify(args: argparse.Namespace) -> None:
         if frame.empty:
             continue
         slug = title.lower().replace(" ", "_").replace(".", "").replace("/", "_")
-        _export_table(frame.reset_index(), outdir / slug, title)
+        _export_table(frame.reset_index(), outdir / slug, title, index=False)
 
     metadata = {"run_id": args.run_id, "report": "falsification"}
     for index, note in enumerate(report.notes, start=1):

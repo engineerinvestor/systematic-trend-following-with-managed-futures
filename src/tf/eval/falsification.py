@@ -102,18 +102,54 @@ def buy_and_hold_nav(
     weights: Mapping[str, float] | None = None,
     starting_nav: float = 1_000_000.0,
 ) -> pd.Series:
-    """Equal-weighted buy and hold, rebalanced never."""
+    """Buy equal dollar amounts at inception and never trade again.
+
+    Units are fixed at the first date on which every requested instrument has a
+    price, so weights drift with relative performance, which is what buy and
+    hold means. Instruments listing after that date are excluded (a genuine
+    buy-and-hold investor at inception could not have bought them). For the
+    daily-rebalanced variant, which earns a rebalancing premium and is a
+    different strategy, use :func:`rebalanced_equal_weight_nav`.
+    """
+
+    valid = prices.dropna(axis=1, how="all")
+    first_common = valid.dropna().index
+    if len(first_common) == 0:
+        raise ValueError("No date on which all instruments have prices")
+    inception = first_common[0]
+    held = valid.loc[inception:]
+
+    if weights is None:
+        allocation = {col: 1.0 / held.shape[1] for col in held.columns}
+    else:
+        total = sum(float(weights.get(col, 0.0)) for col in held.columns)
+        if total <= 0:
+            raise ValueError("weights must sum to a positive value")
+        allocation = {col: float(weights.get(col, 0.0)) / total for col in held.columns}
+
+    units = {
+        col: starting_nav * allocation[col] / float(held[col].iloc[0])
+        for col in held.columns
+    }
+    nav = sum(held[col] * units[col] for col in held.columns)
+    return nav.reindex(prices.index).ffill().fillna(starting_nav)
+
+
+def rebalanced_equal_weight_nav(
+    prices: pd.DataFrame,
+    *,
+    starting_nav: float = 1_000_000.0,
+) -> pd.Series:
+    """Equal weight across active instruments, rebalanced daily.
+
+    Distinct from buy and hold: daily rebalancing sells relative winners and
+    buys relative losers, earning a rebalancing premium under mean reversion.
+    """
 
     returns = prices.pct_change().fillna(0.0)
-    if weights is None:
-        active = prices.notna()
-        weight_frame = active.div(active.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
-    else:
-        weight_frame = pd.DataFrame(
-            {col: float(weights.get(col, 0.0)) for col in prices.columns},
-            index=prices.index,
-        )
-    portfolio_returns = (returns * weight_frame).sum(axis=1)
+    active = prices.notna()
+    weight_frame = active.div(active.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
+    portfolio_returns = (returns * weight_frame.shift(1).fillna(0.0)).sum(axis=1)
     return starting_nav * (1.0 + portfolio_returns).cumprod()
 
 
@@ -126,18 +162,21 @@ def vol_managed_nav(
     starting_nav: float = 1_000_000.0,
     max_leverage: float = 3.0,
 ) -> pd.Series:
-    """Buy and hold scaled to a volatility target, with no trend signal.
+    """Rebalanced equal weight scaled to a volatility target, no trend signal.
 
     This is the control for the volatility-scaling critique: if it captures most
     of a strategy's result, the trend signal is not what produced it.
+
+    ``lookback`` is an EWMA centre of mass, matching the convention the sizing
+    engine uses (a span of the same number has roughly half the memory).
     """
 
     returns = prices.pct_change().fillna(0.0)
     active = prices.notna()
     weight_frame = active.div(active.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
-    portfolio_returns = (returns * weight_frame).sum(axis=1)
+    portfolio_returns = (returns * weight_frame.shift(1).fillna(0.0)).sum(axis=1)
 
-    realised = portfolio_returns.ewm(span=lookback, min_periods=lookback).std()
+    realised = portfolio_returns.ewm(com=lookback, min_periods=lookback).std()
     realised = realised * np.sqrt(periods_per_year)
     # Lagged so the scaling uses only information available beforehand.
     leverage = (target_vol / realised.replace(0.0, np.nan)).shift(1)
@@ -159,16 +198,19 @@ def fast_nav_from_signals(
 ) -> pd.Series:
     """Vectorised signal-to-NAV path, gross of the order queue.
 
-    The placebo needs hundreds of runs, and a full order-book simulation for
-    each is not viable. A placebo tests whether a signal carries information,
-    not whether it can be executed, so this path skips queueing, partial fills,
-    and commissions. Do not use it for a headline result.
+    The placebo needs many runs, and a full order-book simulation for each is
+    not viable. A placebo tests whether a signal carries information, not
+    whether it can be executed, so this path skips queueing, partial fills,
+    commissions, contract rounding, sector caps, and per-asset caps. Feed it
+    signals that already carry any eligibility mask, or it will happily trade
+    instruments the engine would refuse. ``lookback`` is an EWMA centre of
+    mass. Do not use it for a headline result.
     """
 
     returns = prices.pct_change().fillna(0.0)
     aligned = signals.reindex_like(prices).fillna(0.0)
 
-    instrument_vol = returns.ewm(span=lookback, min_periods=lookback).std()
+    instrument_vol = returns.ewm(com=lookback, min_periods=lookback).std()
     instrument_vol = (instrument_vol * np.sqrt(periods_per_year)).shift(1)
     instrument_vol = instrument_vol.replace(0.0, np.nan)
 
@@ -199,8 +241,14 @@ def run_benchmark_battery(
     periods_per_year: int,
     starting_nav: float,
     target_vol: float,
+    vol_lookback_com: float = 60.0,
 ) -> pd.DataFrame:
-    """Compare the strategy against benchmarks that require no skill."""
+    """Compare the strategy against benchmarks that require no skill.
+
+    A benchmark that fails to run appears as a FAILED row rather than being
+    silently dropped: a report missing its benchmarks must not look identical
+    to one that has none configured.
+    """
 
     rows = [_summary_row(base_result, "strategy", periods_per_year)]
 
@@ -216,7 +264,14 @@ def run_benchmark_battery(
     rows.append(
         _nav_summary(
             buy_and_hold_nav(prices, starting_nav=starting_nav),
-            "equal-weight buy and hold",
+            "buy and hold (equal at inception, drifting)",
+            periods_per_year,
+        )
+    )
+    rows.append(
+        _nav_summary(
+            rebalanced_equal_weight_nav(prices, starting_nav=starting_nav),
+            "equal weight, daily rebalanced",
             periods_per_year,
         )
     )
@@ -225,18 +280,28 @@ def run_benchmark_battery(
             vol_managed_nav(
                 prices,
                 target_vol=target_vol,
+                lookback=vol_lookback_com,
                 periods_per_year=periods_per_year,
                 starting_nav=starting_nav,
             ),
-            "vol-managed buy and hold",
+            "vol-managed equal weight (daily rebalanced)",
             periods_per_year,
         )
     )
 
+    # Preset benchmarks re-run the engine. The overrides must state their own
+    # horizons: a deep merge inherits the base config's, which once turned the
+    # "200-day" benchmark into a 30-day one.
     for label, overrides in (
         (
             "200-day long/flat",
-            {"signals": {"preset": "btc_long_flat", "direction": "long_flat"}},
+            {
+                "signals": {
+                    "preset": "btc_long_flat",
+                    "direction": "long_flat",
+                    "horizons": [200],
+                }
+            },
         ),
         (
             "single 12-month horizon",
@@ -245,8 +310,9 @@ def run_benchmark_battery(
     ):
         try:
             rows.append(_summary_row(_run(backtester, overrides), label, periods_per_year))
-        except Exception as exc:  # pragma: no cover - benchmark is optional
+        except Exception as exc:
             logger.warning("Benchmark %s failed: %s", label, exc)
+            rows.append({"variant": f"{label} [FAILED: {type(exc).__name__}: {exc}]"})
 
     return pd.DataFrame(rows).set_index("variant")
 
@@ -302,8 +368,9 @@ def run_signal_delay(
             rows.append(
                 _summary_row(_run(backtester, overrides), f"delay +{delay}", periods_per_year)
             )
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             logger.warning("Signal delay %s failed: %s", delay, exc)
+            rows.append({"variant": f"delay +{delay} [FAILED: {type(exc).__name__}]"})
     return pd.DataFrame(rows).set_index("variant")
 
 
@@ -385,10 +452,13 @@ def run_leave_one_out(
     prices: pd.DataFrame,
     *,
     periods_per_year: int,
+    base_result: BacktestResults | None = None,
 ) -> pd.DataFrame:
     """Drop each instrument in turn to see whether one name carries the result."""
 
-    rows = [_summary_row(_run(backtester), "all assets", periods_per_year)]
+    if base_result is None:
+        base_result = _run(backtester)
+    rows = [_summary_row(base_result, "all assets", periods_per_year)]
     if len(prices.columns) < 2:
         return pd.DataFrame(rows).set_index("variant")
 
@@ -399,8 +469,9 @@ def run_leave_one_out(
         try:
             trimmed = Backtester(subset, universe, backtester._base_cfg)
             rows.append(_summary_row(_run(trimmed), f"without {column}", periods_per_year))
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             logger.warning("Leave-one-out for %s failed: %s", column, exc)
+            rows.append({"variant": f"without {column} [FAILED: {type(exc).__name__}]"})
     return pd.DataFrame(rows).set_index("variant")
 
 
@@ -413,46 +484,59 @@ def run_placebo(
     starting_nav: float,
     draws: int = DEFAULT_PLACEBO_DRAWS,
     seed: int | None = 0,
+    max_enumeration_assets: int = 12,
 ) -> pd.DataFrame:
-    """Compare the strategy to signals with the same shape but random signs.
+    """Compare the strategy to signals with the same shape but flipped signs.
 
-    The placebo keeps the strategy's position sizes and timing and randomises
-    only the direction, so it isolates whether the signal's direction carried
-    information. A strategy whose Sharpe sits inside the placebo distribution
-    has not demonstrated anything.
+    Each variant flips a fixed per-instrument sign, so a placebo run is as
+    persistent as the real signal. For up to ``max_enumeration_assets``
+    instruments every one of the 2^n sign vectors is evaluated exactly once,
+    which is both cheaper and statistically cleaner than sampling with
+    replacement: sampling re-draws the identity vector (the strategy itself)
+    in about 1/2^n of draws. The identity is excluded from the null
+    distribution and reported alongside it instead. Beyond
+    ``max_enumeration_assets`` instruments the space is sampled.
     """
 
-    rng = np.random.default_rng(seed)
-    actual_nav = fast_nav_from_signals(
-        prices,
-        signals,
-        target_vol=target_vol,
-        periods_per_year=periods_per_year,
-        starting_nav=starting_nav,
-    )
-    actual = performance_summary(actual_nav, periods_per_year=periods_per_year)["Sharpe"]
+    n_assets = signals.shape[1]
 
-    sharpes = np.empty(draws, dtype=float)
-    for i in range(draws):
-        # One sign per instrument per draw, so a placebo run is as persistent as
-        # the real signal rather than being averaged away by daily coin flips.
-        flips = rng.choice((-1.0, 1.0), size=(1, signals.shape[1]))
-        placebo_signals = signals * flips
+    def _sharpe_for(flips: np.ndarray) -> float:
         nav = fast_nav_from_signals(
             prices,
-            placebo_signals,
+            signals * flips,
             target_vol=target_vol,
             periods_per_year=periods_per_year,
             starting_nav=starting_nav,
         )
-        sharpes[i] = performance_summary(nav, periods_per_year=periods_per_year)["Sharpe"]
+        return performance_summary(nav, periods_per_year=periods_per_year)["Sharpe"]
 
-    percentile = float((sharpes < actual).mean() * 100.0)
-    distinct = 2 ** signals.shape[1]
-    frame_attrs = {
-        "distinct_sign_combinations": distinct,
-        "is_coarse": bool(distinct < draws),
-    }
+    actual = _sharpe_for(np.ones((1, n_assets)))
+
+    if n_assets <= max_enumeration_assets:
+        from itertools import product as _product
+
+        vectors = [
+            np.array(vector, dtype=float).reshape(1, -1)
+            for vector in _product((-1.0, 1.0), repeat=n_assets)
+            if any(v < 0 for v in vector)  # exclude the identity
+        ]
+        method = "exact enumeration"
+    else:
+        rng = np.random.default_rng(seed)
+        vectors = []
+        for _ in range(draws):
+            flips = rng.choice((-1.0, 1.0), size=(1, n_assets))
+            if (flips > 0).all():
+                continue  # never let the strategy into its own null
+            vectors.append(flips)
+        method = "sampled"
+
+    sharpes = np.array([_sharpe_for(flips) for flips in vectors], dtype=float)
+    finite = sharpes[np.isfinite(sharpes)]
+    if finite.size == 0:
+        raise ValueError("Placebo produced no finite Sharpe ratios")
+
+    beaten = int((finite < actual).sum())
     result = pd.DataFrame(
         [
             {
@@ -460,17 +544,19 @@ def run_placebo(
                 # Named for the path that produced it: this is not the headline
                 # Sharpe, which includes queueing and costs.
                 "strategy_fast_path": actual,
-                "placebo_mean": float(np.mean(sharpes)),
-                "placebo_std": float(np.std(sharpes, ddof=1)) if draws > 1 else 0.0,
-                "placebo_p05": float(np.percentile(sharpes, 5)),
-                "placebo_p95": float(np.percentile(sharpes, 95)),
-                "strategy_percentile": percentile,
-                "draws": int(draws),
-                "distinct_sign_combinations": distinct,
+                "placebo_mean": float(np.mean(finite)),
+                "placebo_std": float(np.std(finite, ddof=1)) if finite.size > 1 else 0.0,
+                "placebo_p05": float(np.percentile(finite, 5)),
+                "placebo_p95": float(np.percentile(finite, 95)),
+                "beats_n_of": f"{beaten} of {finite.size}",
+                "method": method,
+                "variants": int(finite.size),
             }
         ]
     ).set_index("metric")
-    result.attrs.update(frame_attrs)
+    result.attrs["distinct_sign_combinations"] = 2 ** n_assets
+    result.attrs["is_coarse"] = bool(2 ** n_assets - 1 <= 32)
+    result.attrs["method"] = method
     return result
 
 
@@ -553,6 +639,10 @@ def run_falsification(
         raise ValueError("Backtest produced no price history to falsify against")
 
     signals = backtester._build_signals(prices, cfg)
+    if backtester._eligibility_mask is not None:
+        # Without this the placebo trades instruments the engine refuses.
+        mask = backtester._eligibility_mask.reindex_like(signals).fillna(False)
+        signals = signals.where(mask, 0.0)
 
     notes = [
         "Benchmarks and stress variants use the same data, dates, and costs as "
@@ -569,10 +659,13 @@ def run_falsification(
 
     try:
         returns = base_result.nav.pct_change().dropna()
+        bootstrap_samples = 1_000
+        bootstrap_block = 20
         intervals = bootstrap_confidence_intervals(
             returns,
             metrics=["sharpe", "max_drawdown"],
-            n_samples=min(1_000, max(200, placebo_draws)),
+            n_samples=bootstrap_samples,
+            block_size=bootstrap_block,
             seed=seed,
             periods_per_year=periods_per_year,
         )
@@ -583,6 +676,8 @@ def run_falsification(
                     "mean": interval.mean,
                     "lower": interval.lower,
                     "upper": interval.upper,
+                    "n_samples": bootstrap_samples,
+                    "block_size": bootstrap_block,
                 }
                 for name, interval in intervals.items()
             ]
@@ -604,9 +699,11 @@ def run_falsification(
         combinations = placebo.attrs.get("distinct_sign_combinations")
         notes.append(
             f"The placebo flips one sign per instrument, so with "
-            f"{prices.shape[1]} instruments there are only {combinations} "
-            "distinct outcomes. Its percentile is correspondingly coarse and "
-            "extra draws do not refine it."
+            f"{prices.shape[1]} instruments the null holds only "
+            f"{combinations} - 1 distinct variants (the strategy itself is "
+            "excluded). All of them are enumerated exactly; read the "
+            "beats_n_of column as k successes out of that small N, not as a "
+            "percentile."
         )
 
     cost_stress = run_cost_stress(backtester, cfg, periods_per_year=periods_per_year)
@@ -642,7 +739,12 @@ def run_falsification(
         signal_delay=run_signal_delay(backtester, periods_per_year=periods_per_year),
         cost_stress=cost_stress,
         vol_lookback=run_vol_lookback(backtester, periods_per_year=periods_per_year),
-        leave_one_out=run_leave_one_out(backtester, prices, periods_per_year=periods_per_year),
+        leave_one_out=run_leave_one_out(
+            backtester,
+            prices,
+            periods_per_year=periods_per_year,
+            base_result=base_result,
+        ),
         placebo=placebo,
         attribution=attribution_by_asset(base_result),
         side_attribution=attribution_by_side(base_result),
