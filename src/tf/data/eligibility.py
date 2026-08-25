@@ -33,7 +33,9 @@ class EligibilityRule:
     min_history:
         Observations an instrument must already have before it can be traded.
     max_stale_days:
-        Consecutive missing observations that make an instrument ineligible.
+        Maximum tolerated run of consecutive missing observations; one more
+        than this makes the instrument ineligible (``1`` tolerates a single
+        missing day).
     evaluation_frequency:
         How often membership is reconsidered.
     entry_lag:
@@ -69,14 +71,22 @@ class EligibilityRule:
         if not payload:
             return cls()
         data = dict(payload)
+        min_history = _as_bars(data.pop("min_history", 365))
+        max_stale_days = _as_bars(data.pop("max_stale_days", 1))
+        evaluation_frequency = str(data.pop("evaluation_frequency", "monthly"))
+        entry_lag = _as_bars(data.pop("entry_lag", 30))
+        raw_adv = data.pop("min_adv_usd", None)
+        if data:
+            # Surface configuration typos early, exactly as contract metadata
+            # does. A silently ignored liquidity filter is worse than an error.
+            unknown = ", ".join(sorted(str(key) for key in data))
+            raise KeyError(f"Unknown eligibility fields: {unknown}")
         return cls(
-            min_history=_as_bars(data.get("min_history", 365)),
-            max_stale_days=_as_bars(data.get("max_stale_days", 1)),
-            evaluation_frequency=str(data.get("evaluation_frequency", "monthly")),
-            entry_lag=_as_bars(data.get("entry_lag", 30)),
-            min_adv_usd=(
-                float(data["min_adv_usd"]) if data.get("min_adv_usd") is not None else None
-            ),
+            min_history=min_history,
+            max_stale_days=max_stale_days,
+            evaluation_frequency=evaluation_frequency,
+            entry_lag=entry_lag,
+            min_adv_usd=float(raw_adv) if raw_adv is not None else None,
         )
 
 
@@ -168,6 +178,11 @@ def _hold_between_evaluations(eligible: pd.DataFrame, frequency: str) -> pd.Data
     freq = EVALUATION_FREQUENCIES[frequency]
     evaluation_dates = eligible.resample(freq).first().index
     evaluation_dates = evaluation_dates[evaluation_dates.isin(eligible.index)]
+    # The first period start usually predates a mid-period backtest start and
+    # gets dropped by the isin filter, which used to force the whole first
+    # partial period ineligible. Evaluate at the first bar as well.
+    first_bar = eligible.index[:1]
+    evaluation_dates = evaluation_dates.union(first_bar)
     if len(evaluation_dates) == 0:
         return eligible
 

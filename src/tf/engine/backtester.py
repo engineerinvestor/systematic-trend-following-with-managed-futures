@@ -102,8 +102,22 @@ class BacktestResults:
 class Backtester:
     """Daily event loop backtester supporting parameter sweeps and splits."""
 
-    def __init__(self, prices: pd.DataFrame, universe_meta, cfg: dict):
+    def __init__(
+        self,
+        prices: pd.DataFrame,
+        universe_meta,
+        cfg: dict,
+        *,
+        volumes: pd.DataFrame | None = None,
+    ):
+        if not isinstance(prices.index, pd.DatetimeIndex):
+            raise TypeError("Backtester prices must be indexed by a DatetimeIndex")
+        if not prices.index.is_monotonic_increasing:
+            raise ValueError("Backtester price index must be sorted ascending")
         self.prices = prices
+        #: Optional per-instrument traded volume in USD, aligned like prices.
+        #: Feeds the eligibility rule's min_adv_usd filter.
+        self._volumes = volumes
         self.universe_meta = universe_meta  # list of dicts
         self._base_cfg = copy.deepcopy(cfg)
         self.results_dir = Path(cfg["backtest"].get("results_dir", "./results"))
@@ -414,6 +428,15 @@ class Backtester:
         risk_cfg = cfg.get("risk", {}) or {}
         signals = self._build_signals(prices, cfg)
 
+        mask = self._eligibility_mask_for(prices, cfg)
+        self._eligibility_mask = mask
+        if mask is not None:
+            # Masking the signals (not just the final targets) lets the risk
+            # budget renormalise over the eligible names; zeroing sized targets
+            # instead silently ran the portfolio below its volatility target
+            # whenever anything was ineligible.
+            signals = signals.where(mask, 0.0)
+
         max_weight = risk_cfg.get(
             "max_instrument_weight", risk_cfg.get("max_instrument_vol_weight")
         )
@@ -459,7 +482,8 @@ class Backtester:
             vol_warmup=str(risk_cfg.get("vol_warmup", "mask")),
         )
 
-        targets = self._apply_eligibility(targets, prices, cfg)
+        if mask is not None:
+            targets = targets.where(mask, 0.0)
 
         # Timing, measured end to end: a price event on day T first changes the
         # position at day T+2's fill. The signal's internal one-bar lag makes
@@ -471,32 +495,43 @@ class Backtester:
         # delay is conservative and is documented in CRYPTO_SPEC.md.
         return targets.shift(1).reindex_like(prices).fillna(0.0)
 
-    def _apply_eligibility(
+    def _eligibility_mask_for(
         self,
-        targets: pd.DataFrame,
         prices: pd.DataFrame,
         cfg: Mapping[str, object],
-    ) -> pd.DataFrame:
-        """Zero targets for instruments that were not yet eligible."""
+    ) -> pd.DataFrame | None:
+        """Build the point-in-time eligibility mask for the backtest window.
+
+        The mask is computed on the FULL raw price history handed to the
+        backtester, then sliced to the window. Computing it on the window alone
+        counted history from the backtest start date, forcing even an
+        instrument with a decade of prior data to sit out min_history +
+        entry_lag at the beginning of every run (and of every walk-forward
+        fold). Raw history also keeps genuine gaps visible to the staleness
+        rule, which forward-filled window prices cannot.
+        """
 
         universe_cfg = cfg.get("universe", {}) or {}
         rule_cfg = universe_cfg.get("eligibility")
         if not rule_cfg:
-            return targets
+            return None
 
         from ..data.eligibility import EligibilityRule, build_eligibility_mask
 
         rule = EligibilityRule.from_config(rule_cfg)
-        observed = self._observed
-        basis = prices.where(observed) if observed is not None else prices
         listing_dates = {
             item["symbol"]: item.get("listing_date")
             for item in self.universe_meta
             if item.get("listing_date")
         }
-        mask = build_eligibility_mask(basis, rule, listing_dates=listing_dates or None)
-        self._eligibility_mask = mask
-        return targets.where(mask.reindex_like(targets).fillna(False), 0.0)
+        full = self.prices.reindex(columns=prices.columns)
+        mask = build_eligibility_mask(
+            full,
+            rule,
+            listing_dates=listing_dates or None,
+            volumes=self._volumes,
+        )
+        return mask.reindex(index=prices.index, columns=prices.columns).fillna(False)
 
     def _simulate_once(self, cfg: Mapping[str, object], *, config_hash: str) -> BacktestResults:
         backtest_cfg = cfg.get("backtest", {})

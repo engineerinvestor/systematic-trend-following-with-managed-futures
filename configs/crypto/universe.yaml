@@ -5,9 +5,11 @@
 # For a CME futures implementation use tf.data.cme_crypto.build_universe(),
 # which carries contract sizes, tick sizes, and the venue session calendar.
 #
-# listing_date is the CME futures listing, used by the point-in-time
-# eligibility rule. No market data ships with this repository; see
-# docs/CRYPTO_DATA.md for sourcing.
+# These entries carry no listing_date: for spot series the point-in-time
+# eligibility rule keys on when price history actually begins, which the
+# min_history rule reads directly from the data. CME futures listing dates
+# live in tf.data.cme_crypto and apply to futures-implemented universes.
+# No market data ships with this repository; see docs/CRYPTO_DATA.md.
 symbols:
   - symbol: BTC
     sector: Crypto
@@ -16,7 +18,6 @@ symbols:
     calendar: CRYPTO_DAILY
     data_source: yahoo
     data_symbol: BTC-USD
-    listing_date: "2017-12-18"
     description: Bitcoin spot reference price
   - symbol: ETH
     sector: Crypto
@@ -25,7 +26,6 @@ symbols:
     calendar: CRYPTO_DAILY
     data_source: yahoo
     data_symbol: ETH-USD
-    listing_date: "2021-02-08"
     description: Ether spot reference price
   - symbol: SOL
     sector: Crypto
@@ -34,7 +34,6 @@ symbols:
     calendar: CRYPTO_DAILY
     data_source: yahoo
     data_symbol: SOL-USD
-    listing_date: "2025-03-17"
     description: Solana spot reference price
   - symbol: XRP
     sector: Crypto
@@ -43,5 +42,4 @@ symbols:
     calendar: CRYPTO_DAILY
     data_source: yahoo
     data_symbol: XRP-USD
-    listing_date: "2025-05-19"
     description: XRP spot reference price

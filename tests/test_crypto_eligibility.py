@@ -197,3 +197,103 @@ def test_max_asset_weight_caps_concentration() -> None:
     assert capped.iloc[1]["BTC"] == pytest.approx(0.5)
 
     assert _apply_max_asset_weight(weights, None).equals(weights)
+
+
+def test_min_history_counts_from_first_observation_not_window_start(tmp_path) -> None:
+    """R8 regression: pre-window history must satisfy min_history.
+
+    BTC-style instrument with years of data before the backtest start must be
+    tradeable on the window's first bar, not blacked out for min_history +
+    entry_lag all over again.
+    """
+
+    prices = generate_synthetic_prices(
+        ["BTC"], "2016-01-01", "2021-12-31", freq="D", seed=8
+    )
+    universe = [{"symbol": "BTC", "sector": "Crypto", "point_value": 1.0, "contract_step": 1e-4}]
+    cfg = {
+        "data": {"calendar": "CRYPTO_DAILY", "allow_partial_history": True},
+        "universe": {
+            "eligibility": {
+                "min_history": "365D",
+                "entry_lag": "30D",
+                "evaluation_frequency": "monthly",
+            }
+        },
+        "backtest": {
+            "start": "2019-01-01",
+            "end": "2021-12-31",
+            "starting_nav": 1_000_000.0,
+            "results_dir": str(tmp_path),
+        },
+        "signals": {"preset": "tsmom_1_3_12"},
+        "risk": {"periods_per_year": 365, "target_portfolio_vol": 0.10},
+        "execution": {"adv_limit_pct": 0.0},
+    }
+    result = Backtester(prices, universe, cfg).run()
+    positions = result.positions["BTC"]
+    first_trade = positions.index[positions.abs() > 0][0]
+    # Signals need their own 365-bar lookback, but that history predates the
+    # window, so trading must begin within the first days of the window rather
+    # than 395 bars in.
+    assert (first_trade - result.nav.index[0]).days < 40
+
+
+def test_eligibility_rejects_unknown_keys() -> None:
+    """R23 regression: a typo must not silently disable a filter."""
+
+    with pytest.raises(KeyError, match="min_adv_usd_30d"):
+        EligibilityRule.from_config({"min_history": 100, "min_adv_usd_30d": 1e6})
+
+
+def test_min_adv_filter_is_reachable_through_the_backtester(tmp_path) -> None:
+    """R23 regression: the engine must pass volumes into the mask."""
+
+    prices = generate_synthetic_prices(
+        ["BTC", "ETH"], "2019-01-01", "2020-12-31", freq="D", seed=8
+    )
+    volumes = pd.DataFrame(
+        {"BTC": 5e9, "ETH": 1e3},  # ETH has no liquidity
+        index=prices.index,
+    )
+    universe = [
+        {"symbol": s, "sector": "Crypto", "point_value": 1.0, "contract_step": 1e-4}
+        for s in ("BTC", "ETH")
+    ]
+    cfg = {
+        "data": {"calendar": "CRYPTO_DAILY"},
+        "universe": {
+            "eligibility": {
+                "min_history": 30,
+                "entry_lag": 0,
+                "evaluation_frequency": "daily",
+                "min_adv_usd": 1e6,
+            }
+        },
+        "backtest": {
+            "start": "2019-01-01",
+            "end": "2020-12-31",
+            "starting_nav": 1_000_000.0,
+            "results_dir": str(tmp_path),
+        },
+        "signals": {"preset": "tsmom_1_3_12", "horizons": [20]},
+        "risk": {"periods_per_year": 365, "target_portfolio_vol": 0.10},
+        "execution": {"adv_limit_pct": 0.0},
+    }
+    result = Backtester(prices, universe, cfg, volumes=volumes).run()
+    assert (result.positions["ETH"].abs() < 1e-12).all()
+    assert (result.positions["BTC"].abs() > 0).any()
+
+
+def test_first_partial_month_is_not_blanked() -> None:
+    """R23 regression: a mid-month start must not force a month of flat."""
+
+    idx = pd.date_range("2020-06-15", periods=200, freq="D")
+    frame = pd.DataFrame({"BTC": np.arange(200.0) + 100.0}, index=idx)
+    rule = EligibilityRule(min_history=10, entry_lag=0, evaluation_frequency="monthly")
+    mask = build_eligibility_mask(frame, rule)
+    entry = entry_dates(mask)["BTC"]
+    assert entry is not None
+    # Qualifies 10 bars in; the mid-month evaluation at the first bar plus the
+    # July month start bound the entry well before August.
+    assert entry <= pd.Timestamp("2020-07-01")

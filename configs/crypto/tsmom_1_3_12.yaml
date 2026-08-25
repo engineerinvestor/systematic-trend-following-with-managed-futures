@@ -27,7 +27,7 @@ risk:
   vol_model: ewma
   ewma_center_of_mass: 60    # Moskowitz, Ooi, Pedersen use a 60-day centre of mass
   periods_per_year: 365      # crypto trades every calendar day
-  min_vol_periods: 30
+  min_vol_periods: 90  # ~3x the centre of mass, or the estimator is released under-warmed
   target_portfolio_vol: 0.10
   gross_exposure_limit: 3.0
   max_asset_weight: 0.5
@@ -49,7 +49,7 @@ execution:
 
 backtest:
   start: "2018-01-01"
-  end: "2024-12-31"
+  end: "2025-06-30"
   starting_nav: 1000000.0
   rebalance: daily
   seed: 42

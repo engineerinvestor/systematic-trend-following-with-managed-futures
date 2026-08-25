@@ -198,12 +198,18 @@ below on point-in-time data, never by editorial decision.
 universe:
   eligibility:
     min_history: 365D            # observed reference-price history
-    min_adv_usd_30d: null        # calibrate from data; null disables
-    min_open_interest_usd_30d: null
-    max_stale_days: 1            # consecutive missing/stale sessions
+    min_adv_usd: null            # trailing 30-bar ADV in USD; null disables
+    max_stale_days: 1            # tolerated consecutive missing sessions
     evaluation_frequency: monthly
     entry_lag: 30D               # rule must pass for this long before entry
 ```
+
+Unknown keys raise, so a typo cannot silently disable a filter. The ADV filter
+needs a per-instrument USD volume frame passed to the backtester
+(`Backtester(..., volumes=...)`); an open-interest filter is not implemented.
+History and staleness are evaluated on the full raw price history handed to
+the backtester, so an instrument's `min_history` counts from its first
+observation, never from the backtest window's start date.
 
 Eligibility is evaluated with data available at the evaluation date. Running today's
 top-ten coins backward through history is survivorship bias and the engine must make
