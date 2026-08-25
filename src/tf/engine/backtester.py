@@ -461,9 +461,14 @@ class Backtester:
 
         targets = self._apply_eligibility(targets, prices, cfg)
 
-        # Signals already carry their own one-bar lag; this second shift makes a
-        # target computed through t executable at t+1, matching the engine's
-        # next-session fill convention.
+        # Timing, measured end to end: a price event on day T first changes the
+        # position at day T+2's fill. The signal's internal one-bar lag makes
+        # row T reflect prices through T-1; this shift pairs with the event
+        # loop reading targets.iloc[i + 1] when submitting at day i for a fill
+        # at day i+1. Removing either the shift or the iloc[i + 1] alone would
+        # introduce a one-day lookahead; removing both would trade one day
+        # faster at the cost of re-deriving this analysis. The net two-bar
+        # delay is conservative and is documented in CRYPTO_SPEC.md.
         return targets.shift(1).reindex_like(prices).fillna(0.0)
 
     def _apply_eligibility(
@@ -525,6 +530,22 @@ class Backtester:
         np.random.seed(seed)
 
         exec_cfg = cfg.get("execution", {})
+
+        order_type = str(exec_cfg.get("order_type", "market_next_close"))
+        if order_type == "market_next_open":
+            # Historic configs used this name, but the data model is close-only:
+            # there is no open price anywhere, and fills have always been at the
+            # next session's close.
+            logger.warning(
+                "execution.order_type 'market_next_open' is filled at the next "
+                "CLOSE; the engine has no open prices. Renaming the config key "
+                "to 'market_next_close' silences this warning."
+            )
+        elif order_type != "market_next_close":
+            raise ValueError(
+                f"Unsupported execution.order_type: {order_type!r}. The engine "
+                "fills at the next session's close ('market_next_close')."
+            )
 
         capital = float(backtest_cfg.get("starting_nav", 1_000_000.0))
         commission = float(exec_cfg.get("commission_per_contract", 0.0))

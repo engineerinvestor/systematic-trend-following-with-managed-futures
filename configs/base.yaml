@@ -29,7 +29,7 @@ risk:
   sector_caps: {Rates: 0.4, Equities: 0.4, Commodities: 0.4, FX: 0.4}
 
 execution:
-  order_type: "market_next_open"
+  order_type: "market_next_close"
   adv_limit_pct: 0.2
   commission_per_contract: 2.5
   impact:

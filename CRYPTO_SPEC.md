@@ -304,9 +304,17 @@ fewer than three eligible assets.
 
 ### 8.3 Point-in-time enforcement
 
-The signal path enforces `signal_lag >= 1` bar structurally: signals computed through
-*t* produce positions executable at the next session open, with costs assessed there
-(the engine's existing `market_next_open` convention). No API accepts a lag of zero.
+Backtest configs enforce `signals.lag >= 1`: the engine refuses to run a config
+asking for a zero-lag signal. Library signal functions do accept `lag=0` for
+research on the signal itself; nothing that produces a backtest number does.
+
+Measured end to end, the engine's delay is **two bars**: a price event on day T
+first changes the position at day T+2's fill, at that session's **close** (the
+data model is close-only; there are no open prices). One bar comes from the
+signal's internal lag and one from the order-submission mechanics. This is one
+bar more conservative than the minimum honest implementation, so published
+results are, in effect, "delay +1" numbers; the falsification suite's delay
+rows stack on top of this baseline.
 
 ## 9. Configuration schema
 

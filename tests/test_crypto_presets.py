@@ -275,3 +275,68 @@ def test_disable_trend_and_vol_scaling_toggles(tmp_path) -> None:
 
     assert not trend.nav.equals(no_trend.nav)
     assert not trend.nav.equals(no_vol.nav)
+
+
+def test_btc_long_flat_touches_only_btc() -> None:
+    """R6 regression: the single-asset benchmark must not trade the universe."""
+
+    idx = pd.date_range("2020-01-01", periods=600, freq="D")
+    prices = pd.DataFrame(
+        {"BTC": np.linspace(100, 300, 600), "ETH": np.linspace(300, 100, 600)},
+        index=idx,
+    )
+    signal = build_signals(prices, "btc_long_flat", direction="long_flat", horizons=[200])
+    assert (signal["ETH"] == 0.0).all()
+    assert (signal["BTC"] != 0.0).any()
+
+    no_btc = prices.rename(columns={"BTC": "SOL"})
+    with pytest.raises(ValueError, match="BTC"):
+        build_signals(no_btc, "btc_long_flat", direction="long_flat", horizons=[200])
+
+    with pytest.raises(ValueError, match="single horizon"):
+        build_signals(prices, "btc_long_flat", direction="long_flat", horizons=[200, 50])
+
+
+def test_config_rejects_zero_lag(tmp_path) -> None:
+    """CRYPTO_SPEC 8.3: no backtest config may run a zero-lag signal."""
+
+    prices = generate_synthetic_prices(["BTC"], "2021-01-01", "2021-12-31", freq="D", seed=1)
+    universe = [{"symbol": "BTC", "sector": "Crypto", "point_value": 1.0, "contract_step": 1e-4}]
+    cfg = {
+        "data": {"calendar": "CRYPTO_DAILY"},
+        "backtest": {
+            "start": "2021-01-01",
+            "end": "2021-12-31",
+            "starting_nav": 1_000_000.0,
+            "results_dir": str(tmp_path),
+        },
+        "signals": {"preset": "tsmom_1_3_12", "lag": 0},
+        "risk": {"periods_per_year": 365},
+        "execution": {"adv_limit_pct": 0.0},
+    }
+    with pytest.raises(ValueError, match="lag"):
+        Backtester(prices, universe, cfg).run()
+
+
+def test_legacy_path_honours_signal_lag(tmp_path) -> None:
+    """R5 regression: signals.lag must change results without a preset too."""
+
+    prices = generate_synthetic_prices(["ES"], "2021-01-01", "2022-12-31", seed=1)
+    universe = [{"symbol": "ES", "sector": "Equities", "point_value": 50}]
+
+    def cfg(lag: int) -> dict:
+        return {
+            "backtest": {
+                "start": "2021-01-01",
+                "end": "2022-12-31",
+                "starting_nav": 1_000_000.0,
+                "results_dir": str(tmp_path),
+            },
+            "signals": {"lag": lag, "momentum": {"lookbacks": [20], "skip_last_n": 0}},
+            "risk": {"target_portfolio_vol": 0.12},
+            "execution": {"adv_limit_pct": 0.0},
+        }
+
+    fast = Backtester(prices, universe, cfg(1)).run()
+    slow = Backtester(prices, universe, cfg(5)).run()
+    assert not fast.nav.equals(slow.nav)

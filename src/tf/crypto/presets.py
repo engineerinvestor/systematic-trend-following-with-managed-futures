@@ -196,11 +196,36 @@ def _long_flat_ma_builder(
     *,
     horizons: Sequence[int],
     lag: int = 1,
+    symbol: str = "BTC",
 ) -> pd.DataFrame:
-    """Price versus a single long moving average, the shape of listed products."""
+    """Price versus a single long moving average on ONE instrument.
+
+    Listed long/flat crypto products are single-asset (or two-asset) rules, so
+    the benchmark must be too; an earlier version silently applied the rule to
+    every column in the universe, which is a different multi-asset strategy.
+    The frame keeps every column (zeros elsewhere) so sizing shapes align.
+    """
+
+    if len(horizons) > 1:
+        raise ValueError(
+            "btc_long_flat takes a single horizon; got "
+            f"{list(horizons)}. Pass horizons=[200] for the classic rule."
+        )
+    if symbol in prices.columns:
+        target = symbol
+    elif prices.shape[1] == 1:
+        target = prices.columns[0]
+    else:
+        raise ValueError(
+            f"btc_long_flat needs a {symbol!r} column or a single-instrument "
+            f"universe; got columns {list(prices.columns)}"
+        )
 
     window = int(horizons[0])
-    return price_minus_ma(prices, window=window, transform="sign", lag=lag)
+    signal = price_minus_ma(prices[[target]], window=window, transform="sign", lag=lag)
+    frame = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    frame[target] = signal[target]
+    return frame
 
 
 PRESETS: Mapping[str, Preset] = {
@@ -241,8 +266,9 @@ PRESETS: Mapping[str, Preset] = {
     "btc_long_flat": Preset(
         name="btc_long_flat",
         description=(
-            "Price versus its 200-day moving average, long or flat. The shape of "
-            "most listed crypto trend products, included as a benchmark."
+            "BTC price versus its 200-day moving average, long or flat. The "
+            "shape of most listed crypto trend products, included as a "
+            "single-asset benchmark."
         ),
         builder=_long_flat_ma_builder,
         horizons=(200,),

@@ -31,9 +31,11 @@ def bars_per_year(freq: str = "daily") -> int:
 def resolve_horizon(horizon: str | int, freq: str = "daily") -> int:
     """Resolve one horizon to a bar count.
 
-    Integers pass through as bar counts. Strings are parsed as pandas offsets,
-    so ``"30D"``, ``"3M"``, and ``"1Y"`` all work, and are converted using the
-    calendar's bars-per-year.
+    Integers pass through as bar counts. Strings are parsed as fixed pandas
+    durations: day and week forms work (``"30D"``, ``"365D"``, ``"52W"``), and
+    are converted using the calendar's bars-per-year. Month and year units
+    (``"3M"``, ``"1Y"``) are not fixed durations and raise; write the day
+    count instead (``"90D"``, ``"365D"``).
     """
 
     if isinstance(horizon, (int,)) and not isinstance(horizon, bool):
@@ -47,12 +49,12 @@ def resolve_horizon(horizon: str | int, freq: str = "daily") -> int:
 
     try:
         delta = pd.Timedelta(text)
-    except ValueError:
-        try:
-            offset = pd.tseries.frequencies.to_offset(text)
-            delta = pd.Timedelta(offset.nanos, unit="ns")
-        except (ValueError, TypeError) as exc:
-            raise ValueError(f"Could not parse horizon {horizon!r}") from exc
+    except ValueError as exc:
+        raise ValueError(
+            f"Could not parse horizon {horizon!r}. Use a bar count or a fixed "
+            "duration such as '30D' or '52W'; month and year units are not "
+            "fixed durations, so write the day count ('365D' for one year)."
+        ) from exc
 
     days = delta.total_seconds() / 86_400.0
     if days <= 0:

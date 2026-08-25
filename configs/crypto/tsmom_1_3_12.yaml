@@ -36,7 +36,7 @@ risk:
   sector_caps: {Crypto: 1.0}
 
 execution:
-  order_type: market_next_open
+  order_type: market_next_close
   adv_limit_pct: 0.2
   adv_contracts: {BTC: 20000, ETH: 20000, SOL: 20000, XRP: 20000}
   commission_per_contract: 0.0
