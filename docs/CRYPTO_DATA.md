@@ -144,22 +144,17 @@ are plausible starting points, wider for newer contracts and wider again before
 if a result survives only at 1x assumed costs, it is a cost assumption, not a
 strategy.
 
-**The engine's slippage model cannot express a proportional spread.** Execution
-cost is a tick count times a single universe-wide `execution.tick_value`, so it
-scales with quantity rather than with notional. That is workable for a futures
-universe whose contracts are similar in size, and wrong for crypto, where BTC
-near $60,000 and XRP near $0.50 differ by five orders of magnitude: one
-`tick_value` cannot be meaningful for both. In practice a plausible-looking
-configuration ends up nearly frictionless. On a real BTC/ETH/SOL run turning over
-roughly 9 times per year (43x over that five-year window), quadrupling every
-configured cost changed annual return by 6.5 basis points.
-
-The falsification report detects this and says so, rather than presenting the
-result as net of costs. `tf.costs.crypto.CryptoCostModel` states spreads the
-correct way, in basis points of notional per instrument and era, but the engine
-does not yet consume it; wiring it in means teaching the execution layer about
-proportional costs. Until then, treat crypto backtest costs as indicative and
-lean on the stress rows and the report's warnings.
+**Configure proportional spreads or costs will barely bite.** Tick-based
+slippage scales with quantity rather than notional, which cannot serve a
+universe where BTC near $60,000 and XRP near $0.50 differ by five orders of
+magnitude: with only the tick model, a real BTC/ETH/SOL run turning over
+roughly 9 times per year saw 6.5 basis points of annual return between 1x and
+4x costs. The engine therefore also charges `execution.spread_bps`, a
+per-instrument half-spread in basis points of notional (the shipped crypto
+configs carry values from `tf.costs.crypto`), reads per-instrument tick values
+from metadata `tick_size`, and honours `execution.cost_multiplier` as one
+honest stress knob. The falsification report still detects and says when the
+configured costs are too small to constrain the strategy.
 
 **Mixed futures and crypto universes are unsupported.** All instruments share
 one index and one calendar. Aligning a mixed universe to a 7-day calendar

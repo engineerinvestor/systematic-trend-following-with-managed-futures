@@ -461,8 +461,10 @@ signal's direction carried information, not whether it could be executed. The
 report labels the figure accordingly.
 
 The placebo flips one sign per instrument, so a universe of *n* instruments has
-only 2^n distinct outcomes. With the four-asset reference universe that is 16,
-and the reported percentile is correspondingly coarse. The report says so.
+only 2^n distinct outcomes. For small universes every non-identity sign vector
+is enumerated exactly (the strategy is excluded from its own null) and the
+result is reported as k successes of N variants rather than a percentile. The
+report says so.
 
 ### Mixed futures and cryptocurrency universes are unsupported
 
@@ -472,19 +474,18 @@ the square root of five sevenths, or discard two sevenths of the crypto
 observations. Per-instrument calendars are the prerequisite; until then crypto
 universes are crypto-only.
 
-### Costs are indicative, not net
+### Costs need proportional spreads configured
 
-The engine's slippage is a tick count times a single universe-wide tick value,
-so it scales with quantity rather than notional. Crypto prices span five orders
-of magnitude, so one tick value cannot serve the whole universe and a
-plausible-looking configuration ends up nearly frictionless: on a real
-BTC/ETH/SOL run turning over roughly 9 times per year, quadrupling every
-configured cost moved annual return by 6.5 basis points. `tf.costs.crypto.CryptoCostModel`
-states spreads correctly, in basis points of notional per instrument and era,
-but the execution layer does not yet consume it. The falsification report
-detects the condition and reports it rather than presenting gross figures as
-net. Teaching the execution layer about proportional costs is the first item
-for v0.2.
+Tick-based slippage scales with quantity rather than notional, which cannot
+serve a universe whose prices span five orders of magnitude: with only the
+tick model, a real BTC/ETH/SOL run turning over roughly 9 times per year saw
+6.5 basis points of annual return between 1x and 4x costs. The engine now also
+charges `execution.spread_bps` (per-instrument half-spread in basis points of
+notional, shipped in the crypto configs), uses per-instrument tick values from
+metadata `tick_size`, and honours `execution.cost_multiplier`. The
+falsification report still detects and states when configured costs are too
+small to constrain the strategy, because a spread assumption of zero is only
+one typo away.
 
 ### There is no margin model
 

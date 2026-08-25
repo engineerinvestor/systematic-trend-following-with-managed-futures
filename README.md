@@ -24,7 +24,7 @@ tf walkforward --config configs/base.yaml --run-id walk-252x63 --insample 252 --
 
 ## Command Line Interface
 
-The `tf` console entrypoint exposes four production-ready commands that cover
+The `tf` console entrypoint exposes five commands that cover
 single backtests, reporting and both research workflows introduced in phase 8:
 
 | Command | Purpose |
@@ -61,7 +61,7 @@ walkforward_results, _ = api.run_walk_forward(
 )
 ```
 
-Four worked notebook examples are available in `examples/notebooks/`:
+Worked notebook examples are available in `examples/notebooks/`:
 
 * `quick_start.ipynb` – end-to-end workflow from configuration to analytics.
 * `parameter_study.ipynb` – grid search and sweep metadata analysis.
@@ -72,7 +72,8 @@ Four worked notebook examples are available in `examples/notebooks/`:
 
 `tf-trend[crypto]` applies the same engine to cryptocurrency, with the pieces
 crypto actually needs: a 7-day calendar, 365-day annualisation, point-in-time
-universe eligibility, and a falsification suite that runs by default.
+universe eligibility, and a falsification suite (`tf crypto falsify`) built to
+challenge every result the engine produces.
 
 ```bash
 tf run --config configs/crypto/tsmom_1_3_12.yaml --run-id my-run
@@ -221,7 +222,7 @@ minute on modern hardware.
 
 ## Packaging & releases
 
-The project is packaged as `tf-trend` with dependencies pinned in `pyproject.toml`.
+The project is packaged as `tf-trend`; most dependencies are pinned in `pyproject.toml` (pandas floats across majors, and CI tests both).
 Install via `pip install tf-trend` once a distribution has been built, or use
 `pip install -e .` for editable development installs.
 

@@ -72,28 +72,31 @@ def test_annualisation_factor_is_exactly_sqrt_365() -> None:
 
 
 def test_annualised_vol_recovers_known_daily_sigma() -> None:
-    """A known daily vol on a 7-day series must annualize to sigma * sqrt(365).
+    """A known daily vol on a 7-day series must annualize to sigma * sqrt(365)
+    within 1 percent, the CRYPTO_SPEC milestone-1 criterion.
 
-    Tolerance is 3 percent: the full-sample standard deviation of 4,000 draws
-    carries a relative standard error near 1.1 percent, so a tighter bound would
-    be testing the random seed rather than the annualisation.
+    The sample must be large enough that estimator noise sits well inside the
+    bound: at n = 30,000 the relative standard error of a sample standard
+    deviation is about 0.4 percent, so a 1 percent tolerance tests the
+    annualisation, not the seed.
     """
 
     sigma = 0.03
-    idx = pd.date_range("2015-01-01", periods=4000, freq="D")
+    n = 30_000
+    idx = pd.date_range("1950-01-01", periods=n, freq="D")
     rng = np.random.default_rng(7)
-    returns = pd.DataFrame({"BTC": rng.normal(0.0, sigma, size=len(idx))}, index=idx)
+    returns = pd.DataFrame({"BTC": rng.normal(0.0, sigma, size=n)}, index=idx)
 
     vol = rolling_volatility(
-        returns, window=len(idx), min_periods=len(idx), periods_per_year=CALENDAR_DAYS
+        returns, window=n, min_periods=n, periods_per_year=CALENDAR_DAYS
     )
     realised = float(vol["BTC"].iloc[-1])
     expected = sigma * np.sqrt(CALENDAR_DAYS)
-    assert realised == pytest.approx(expected, rel=0.03)
+    assert realised == pytest.approx(expected, rel=0.01)
 
     # Using the weekday factor on the same series understates vol materially.
     weekday = rolling_volatility(
-        returns, window=len(idx), min_periods=len(idx), periods_per_year=252
+        returns, window=n, min_periods=n, periods_per_year=252
     )
     assert float(weekday["BTC"].iloc[-1]) < 0.85 * expected
 

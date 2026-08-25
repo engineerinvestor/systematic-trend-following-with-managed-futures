@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Adversarial review remediation (changes results)
+
+An adversarial review of the engine and the crypto extension found defects that
+made published numbers wrong. Fixing them changes backtest results; the table
+below lists what moved and why. Full findings are in the commit messages.
+
+| Change | Effect on results |
+|---|---|
+| Every report path annualises on `risk.periods_per_year` | Crypto Sharpe/vol from `tf run`/`tf walkforward` rise ~20%; CAGR reflects real calendar years |
+| `max_instrument_vol_weight` now caps the risk budget, not notional | Futures configs regain their volatility target (the shipped 0.04 notional clip had held realised vol near 1% against a 15% target) |
+| `backtest.compound_capital` (default true) | Exposure tracks equity; the equity curve is geometric, as the metrics always assumed |
+| Order queue nets stale rebalance orders | No phantom round trips under ADV caps; lower turnover and cost in capacity-tight runs |
+| Eligibility counts history from first observation | Instruments with pre-window history trade from the window's first bar instead of sitting out min_history again |
+| Ineligible names' risk budget reallocates | Portfolio holds its vol target through thin eras |
+| `execution.spread_bps` per-instrument proportional costs | Crypto cost stress actually bites; net figures stop being gross in disguise |
+| Sortino/Calmar undefined cases report NaN, wipeouts report -100% | Short walk-forward folds stop averaging best-case zeros into summaries |
+| Vol warm-up honours late listings (`pct_change` NaNs propagate) | No oversized day-one positions on newly listed instruments |
+| Rolling vol ddof matches EWMA (sample) | Sub-1% sizing shift when `vol_model: rolling` |
+
+Also fixed without changing numbers: the falsification battery's mislabeled
+benchmarks (a 30-day rule shipped labelled "200-day"; "buy and hold" was daily
+rebalanced; `btc_long_flat` traded the whole universe), benchmarks vanishing via
+a swallowed TypeError, the signal-delay stress being a no-op for non-preset
+configs, the placebo sampling its own strategy into the null, a pandas-3 crash
+in the DataFrame ADV branch, weekend crypto roll dates that RollEngine could
+never match, and config typos that fell back to defaults without a warning.
+
 ### Added
 - MIT license file and attribution to Engineer Investor ([@egr_investor](https://x.com/egr_investor)).
 - `CRYPTO_SPEC.md`, the specification for the `tf-trend[crypto]` extension.
@@ -62,7 +89,8 @@
 - `tf.eval.falsification` and `tf crypto falsify`: benchmark battery, the trend
   signal versus volatility scaling 2x2, signal-delay and cost stress, volatility
   lookback sensitivity, leave-one-asset-out, a randomised-sign placebo, long and
-  short attribution reconciled to net, and a per-instrument data-span panel.
+  short attribution with a gross-to-net restatement, and a per-instrument
+  data-span panel.
   The report states when transaction costs are configured at zero, when
   annualisation is left at 252, and when the placebo distribution is coarse.
 - `configs/crypto/`: runnable configs for all four presets plus a spot universe.
@@ -113,7 +141,8 @@
 
 ### Changed
 - README expanded with CLI/API guidance, QA workflow and release process.
-- Dependencies pinned in `pyproject.toml` to guarantee reproducible installations.
+- Most dependencies pinned in `pyproject.toml` (pandas deliberately floats;
+  CI tests both supported majors).
 
 ## [0.8.0] - 2024-04-15
 

@@ -561,7 +561,14 @@ def run_placebo(
 
 
 def attribution_by_side(result: BacktestResults) -> pd.DataFrame:
-    """Split PnL into what the long and short books contributed."""
+    """Split PnL into what the long and short books contributed.
+
+    The "net (restated)" row is gross minus costs, an arithmetic restatement.
+    The reconciliation rows compare it against the NAV change the engine
+    actually produced: the residual is fill-timing PnL (attribution marks with
+    the previous bar's position, the engine marks the fill bar itself) and is
+    reported rather than hidden, so "reconciled" means checked, not assumed.
+    """
 
     contributions = compute_pnl_contributions(
         result.prices, result.positions, result.point_values
@@ -576,6 +583,8 @@ def attribution_by_side(result: BacktestResults) -> pd.DataFrame:
     costs = result.costs
     total_costs = float(costs["total"].sum()) if costs is not None and "total" in costs else 0.0
     gross = float(long_pnl + short_pnl)
+    net_restated = gross - total_costs
+    nav_change = float(result.nav.iloc[-1] - result.nav.iloc[0]) if len(result.nav) else 0.0
 
     return pd.DataFrame(
         [
@@ -583,7 +592,9 @@ def attribution_by_side(result: BacktestResults) -> pd.DataFrame:
             {"side": "short", "gross_pnl": float(short_pnl)},
             {"side": "total gross", "gross_pnl": gross},
             {"side": "costs", "gross_pnl": -total_costs},
-            {"side": "net", "gross_pnl": gross - total_costs},
+            {"side": "net (restated)", "gross_pnl": net_restated},
+            {"side": "NAV change (engine)", "gross_pnl": nav_change},
+            {"side": "residual (fill timing)", "gross_pnl": nav_change - net_restated},
         ]
     ).set_index("side")
 

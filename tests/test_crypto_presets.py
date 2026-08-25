@@ -340,3 +340,58 @@ def test_legacy_path_honours_signal_lag(tmp_path) -> None:
     fast = Backtester(prices, universe, cfg(1)).run()
     slow = Backtester(prices, universe, cfg(5)).run()
     assert not fast.nav.equals(slow.nav)
+
+
+def test_nav_recomputes_independently_from_trades_and_prices(tmp_path) -> None:
+    """Accounting check with teeth: rebuild final NAV from raw artefacts.
+
+    The ledger's own nav = cash + asset_value line is written by the same code
+    it would be checked against, so asserting it is a tautology. This instead
+    replays the trades against prices: starting NAV, plus mark-to-market of the
+    position built from fills, minus every cost, must equal the engine's final
+    NAV.
+    """
+
+    prices = generate_synthetic_prices(
+        ["BTC", "ETH"], "2021-01-01", "2022-06-30", freq="D", common_factor=0.5, seed=13
+    )
+    universe = [
+        {"symbol": s, "sector": "Crypto", "point_value": 1.0, "contract_step": 1e-4}
+        for s in ("BTC", "ETH")
+    ]
+    cfg = {
+        "data": {"calendar": "CRYPTO_DAILY"},
+        "backtest": {
+            "start": "2021-01-01",
+            "end": "2022-06-30",
+            "starting_nav": 1_000_000.0,
+            "results_dir": str(tmp_path),
+        },
+        "signals": {"preset": "tsmom_1_3_12"},
+        "risk": {"periods_per_year": 365, "target_portfolio_vol": 0.10},
+        "execution": {
+            "adv_limit_pct": 0.5,
+            "adv_contracts": {"BTC": 20000, "ETH": 20000},
+            "commission_per_contract": 0.05,
+            "impact": {"k": 0.02, "alpha": 0.5},
+            "min_slippage_ticks": 0.5,
+            "tick_value": 0.01,
+            "spread_bps": {"BTC": 2.0, "ETH": 3.0},
+        },
+    }
+    result = Backtester(prices, universe, cfg).run()
+    trades = result.trades
+    assert not trades.empty
+
+    cash = 1_000_000.0
+    position = {"BTC": 0.0, "ETH": 0.0}
+    for row in trades.itertuples():
+        cash -= row.notional + row.cost
+        position[row.symbol] += row.qty
+
+    final_prices = result.prices.iloc[-1]
+    recomputed = cash + sum(position[s] * float(final_prices[s]) for s in position)
+    assert recomputed == pytest.approx(float(result.nav.iloc[-1]), abs=1e-4)
+
+    # And the trades' own cost column must be what the costs frame charged.
+    assert trades["cost"].sum() == pytest.approx(float(result.costs["total"].sum()))

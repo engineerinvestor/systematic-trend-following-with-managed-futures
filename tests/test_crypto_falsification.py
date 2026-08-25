@@ -146,16 +146,24 @@ def test_fast_nav_path_tracks_the_direction_of_a_trend() -> None:
     assert down.iloc[-1] < down.iloc[0]
 
 
-def test_attribution_by_side_reconciles_to_net(tmp_path) -> None:
+def test_attribution_reconciles_against_engine_nav(tmp_path) -> None:
+    """The restated net must be checked against the engine's NAV change, with
+    the fill-timing residual reported, not assumed away."""
+
     result = _backtester(tmp_path).run()
     frame = attribution_by_side(result)
-    assert set(frame.index) == {"long", "short", "total gross", "costs", "net"}
+    assert {"long", "short", "total gross", "costs", "net (restated)",
+            "NAV change (engine)", "residual (fill timing)"} <= set(frame.index)
 
-    gross = frame.loc["long", "gross_pnl"] + frame.loc["short", "gross_pnl"]
-    assert frame.loc["total gross", "gross_pnl"] == pytest.approx(gross)
-    assert frame.loc["net", "gross_pnl"] == pytest.approx(
-        gross + frame.loc["costs", "gross_pnl"]
+    nav_change = float(result.nav.iloc[-1] - result.nav.iloc[0])
+    assert frame.loc["NAV change (engine)", "gross_pnl"] == pytest.approx(nav_change)
+    assert frame.loc["residual (fill timing)", "gross_pnl"] == pytest.approx(
+        nav_change - frame.loc["net (restated)", "gross_pnl"]
     )
+    # The residual is fill-timing noise, small relative to gross activity.
+    gross_activity = abs(frame.loc["long", "gross_pnl"]) + abs(frame.loc["short", "gross_pnl"])
+    if gross_activity > 0:
+        assert abs(frame.loc["residual (fill timing)", "gross_pnl"]) < 0.2 * gross_activity + 1.0
 
 
 def test_attribution_by_asset_shares_sum_to_one(tmp_path) -> None:
@@ -201,8 +209,13 @@ def test_full_report_produces_every_table(tmp_path) -> None:
         "Attribution by Asset",
         "Attribution by Side",
         "Data Span",
+        "Bootstrap Confidence Intervals",
     ):
         assert expected in titles
+    # The CI table degrades to empty inside a try/except; a silently broken
+    # bootstrap must fail this test, not ship a complete-looking report.
+    assert not report.confidence_intervals.empty
+    assert {"n_samples", "block_size"} <= set(report.confidence_intervals.columns)
 
     assert "strategy" in report.variants.index
     assert len(report.leave_one_out) == 4  # all assets plus one row per drop
