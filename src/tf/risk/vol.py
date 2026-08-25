@@ -56,13 +56,17 @@ def rolling_volatility(
     annualize: bool = True,
     periods_per_year: int = 252,
 ) -> pd.DataFrame:
-    """Rolling standard deviation of returns."""
+    """Rolling sample standard deviation of returns (ddof=1).
+
+    Matches the EWMA estimator, so switching ``vol_model`` does not change
+    position size through a ddof mismatch.
+    """
 
     if window <= 1:
         raise ValueError("window must be greater than one")
 
     min_periods = min_periods or window
-    vol = returns.rolling(window=window, min_periods=min_periods).std(ddof=0)
+    vol = returns.rolling(window=window, min_periods=min_periods).std(ddof=1)
     if annualize:
         vol = vol * np.sqrt(periods_per_year)
     return vol.fillna(0.0)

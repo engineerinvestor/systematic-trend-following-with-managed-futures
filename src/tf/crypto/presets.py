@@ -30,10 +30,10 @@ TSMOM_VOL_COM = 60.0
 #: EWMA volatility centre of mass used by the replication ensemble.
 REPLICATION_VOL_COM = 40.0
 
-#: Per-instrument volatility normalisation from the TSMOM literature. This is a
-#: signal-scaling convention, not a recommendation to run a portfolio at 40
-#: percent volatility; portfolio-level scaling is applied on top.
-INSTRUMENT_VOL_TARGET = 0.40
+# Note on volatility scaling: the portfolio sizer divides each instrument's
+# risk budget by its own volatility estimate, which for sign signals
+# reproduces the TSMOM literature's inverse-vol per-instrument scaling up to a
+# global constant; there is no separate 40%-per-instrument normalisation step.
 
 
 def apply_direction(signals: pd.DataFrame, direction: str) -> pd.DataFrame:

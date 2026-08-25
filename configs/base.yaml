@@ -25,7 +25,11 @@ risk:
   gross_exposure_limit: 2.5
   rebalance_threshold: 0.25
   risk_allocator: "proportional"
-  max_instrument_vol_weight: 0.04
+  # Cap on any instrument's share of the RISK BUDGET (equal weight over the
+  # 8-instrument universe is 0.125). The old value of 0.04 dated from when this
+  # was misapplied as a notional clip, which bound for every instrument on
+  # every day and held realised vol near 1% against the 15% target.
+  max_instrument_vol_weight: 0.25
   sector_caps: {Rates: 0.4, Equities: 0.4, Commodities: 0.4, FX: 0.4}
 
 execution:

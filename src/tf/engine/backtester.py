@@ -354,6 +354,27 @@ class Backtester:
             and (lhs.prices.equals(rhs.prices) if lhs.prices is not None else rhs.prices is None)
         )
 
+    @staticmethod
+    def _preset_vol_com(cfg: Mapping[str, object]) -> float | None:
+        """Volatility centre of mass the config's preset was published with.
+
+        Used only when ``risk.ewma_center_of_mass`` is not set, so a preset run
+        matches its literature convention (60 for the TSMOM presets, 40 for the
+        replication ensemble) instead of silently taking the RiskMetrics 0.94
+        default.
+        """
+
+        sig_cfg = cfg.get("signals", {}) or {}
+        preset = sig_cfg.get("preset")
+        if not preset:
+            return None
+        from ..crypto.presets import get_preset
+
+        try:
+            return float(get_preset(str(preset)).vol_center_of_mass)
+        except KeyError:
+            return None
+
     def _build_signals(self, prices: pd.DataFrame, cfg: Mapping[str, object]) -> pd.DataFrame:
         """Return the signal frame for ``prices``.
 
@@ -469,16 +490,22 @@ class Backtester:
             sector_caps=risk_cfg.get("sector_caps"),
             contract_rounding=self._contract_steps,
             rebalance_threshold=risk_cfg.get("rebalance_threshold", 0.25),
+            rebalance_threshold_mode=str(
+                risk_cfg.get("rebalance_threshold_mode", "contracts")
+            ),
             vol_model=risk_cfg.get("vol_model", "ewma"),
             vol_lookback=risk_cfg.get("vol_lookback", 63),
             ewma_lambda=risk_cfg.get("ewma_lambda", 0.94),
             min_vol_periods=risk_cfg.get("min_vol_periods", 20),
             risk_allocator=risk_cfg.get("risk_allocator", "proportional"),
             max_position_weight=max_weight,
+            max_notional_weight=risk_cfg.get("max_notional_weight"),
             max_asset_weight=risk_cfg.get("max_asset_weight"),
             volatility=volatility,
             periods_per_year=periods_per_year,
-            ewma_center_of_mass=risk_cfg.get("ewma_center_of_mass"),
+            ewma_center_of_mass=risk_cfg.get(
+                "ewma_center_of_mass", self._preset_vol_com(cfg)
+            ),
             vol_warmup=str(risk_cfg.get("vol_warmup", "mask")),
         )
 
@@ -583,6 +610,7 @@ class Backtester:
             )
 
         capital = float(backtest_cfg.get("starting_nav", 1_000_000.0))
+        compound_capital = bool(backtest_cfg.get("compound_capital", True))
         commission = float(exec_cfg.get("commission_per_contract", 0.0))
         impact_cfg = exec_cfg.get("impact", {})
         impact_k = float(impact_cfg.get("k", 0.0))
@@ -628,6 +656,17 @@ class Backtester:
             (current_pos * first_prices * point_values).fillna(0.0).sum()
         )
         nav.loc[first_ts] = cash + first_asset_value
+        prev_nav_for_sizing = float(nav.loc[first_ts])
+
+        def _round_targets(desired: pd.Series) -> pd.Series:
+            rounded = {}
+            for sym, value in desired.items():
+                step = float(self._contract_steps.get(sym, 1.0))
+                if step <= 0:
+                    step = 1.0
+                rounded[sym] = float(np.round(float(value) / step) * step)
+            return pd.Series(rounded)
+
         cash_series.loc[first_ts] = cash
         pnl_series.loc[first_ts] = 0.0
         positions.loc[first_ts] = current_pos.copy()
@@ -667,6 +706,15 @@ class Backtester:
             if desired is None:
                 return
             desired = desired.fillna(0.0)
+            if compound_capital:
+                # Targets were sized off starting capital before the loop began.
+                # Scaling by the live NAV keeps risk proportional to equity, so
+                # the equity curve is geometric and the geometric CAGR the
+                # metrics report describes the process that generated it.
+                # Without this a run that doubles NAV trades at half the
+                # intended risk per unit of equity in its second half.
+                scale = max(prev_nav_for_sizing, 0.0) / capital
+                desired = _round_targets(desired * scale)
             pending_totals = {
                 sym: sum(o.qty for o in pending_orders[sym]) for sym in prices.columns
             }
@@ -795,6 +843,7 @@ class Backtester:
             nav_today = cash + asset_value
             pnl_today = nav_today - prev_nav
             prev_nav = nav_today
+            prev_nav_for_sizing = nav_today
 
             nav.loc[ts] = nav_today
             cash_series.loc[ts] = cash

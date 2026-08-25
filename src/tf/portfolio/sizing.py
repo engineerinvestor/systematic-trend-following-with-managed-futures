@@ -4,10 +4,21 @@ from __future__ import annotations
 
 from typing import Mapping
 
+import logging
+
 import numpy as np
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 from ..risk.vol import ewma_vol, rolling_volatility
+
+
+def _min_step(contract_rounding: float | Mapping[str, float], symbols) -> float:
+    if isinstance(contract_rounding, Mapping):
+        steps = [float(contract_rounding.get(sym, 1.0)) for sym in symbols]
+        return min(steps) if steps else 1.0
+    return float(contract_rounding)
 
 
 def _resolve_contract_step(contract_rounding: float | Mapping[str, float], symbol: str) -> float:
@@ -35,17 +46,52 @@ def _apply_max_asset_weight(
 ) -> pd.DataFrame:
     """Cap each instrument's share of that day's gross exposure.
 
-    Sector caps do not constrain a single name inside its own sector, so a
-    concentrated universe (crypto in particular, where one asset can dominate the
-    trend) can otherwise put nearly all risk in one instrument.
+    Water-filling on shares with gross preserved: names over the cap are fixed
+    at it and the excess is redistributed pro-rata over the uncapped names,
+    repeating until every share respects the cap. Gross exposure is unchanged,
+    because this constraint is about concentration, not de-risking. A single
+    clip cannot do this: clipping shrinks gross, which shrinks the cap, so a
+    [0.8, 0.1, 0.1] book clipped once at 0.5 ends at 71% of gross.
+
+    Rows where the cap is infeasible (fewer than ``1 / cap`` active names,
+    e.g. one live instrument against a 50% cap) are left unchanged: the only
+    mathematical solution there is zero, and silently liquidating the book is
+    worse than a violated concentration preference.
     """
 
     if max_asset_weight is None or max_asset_weight <= 0 or weights.empty:
         return weights
-    gross = weights.abs().sum(axis=1)
-    limit = gross * float(max_asset_weight)
-    capped = weights.clip(upper=limit, axis=0)
-    return capped.clip(lower=-limit, axis=0)
+    cap = float(max_asset_weight)
+    if cap >= 1.0:
+        return weights
+
+    values = weights.to_numpy(dtype=float, copy=True)
+    for row in range(values.shape[0]):
+        absolute = np.abs(values[row])
+        gross = absolute.sum()
+        if gross <= 0:
+            continue
+        active = absolute > 0
+        if active.sum() * cap < 1.0 - 1e-12:
+            continue  # infeasible: every allocation of this row violates the cap
+
+        shares = absolute / gross
+        capped = np.zeros_like(shares, dtype=bool)
+        for _ in range(values.shape[1]):
+            over = (shares > cap + 1e-12) & ~capped
+            if not over.any():
+                break
+            capped |= over
+            shares[capped] = cap
+            remainder = 1.0 - cap * capped.sum()
+            free = ~capped & active
+            free_total = shares[free].sum()
+            if free_total <= 0:
+                break
+            shares[free] *= remainder / free_total
+        values[row] = np.sign(values[row]) * shares * gross
+
+    return pd.DataFrame(values, index=weights.index, columns=weights.columns)
 
 
 def _scale_to_gross_limit(weights: pd.DataFrame, gross_limit: float | None) -> pd.DataFrame:
@@ -99,7 +145,11 @@ def _compute_volatility(
     if volatility is not None:
         vol = volatility.copy()
     else:
-        returns = prices.pct_change().fillna(0.0)
+        # NaN returns (before an instrument's first price) must stay NaN: a
+        # fillna(0.0) here fabricated a pre-listing run of zero returns that
+        # satisfied the EWMA's min_periods, releasing a near-zero volatility
+        # estimate on the first real trading day and defeating the warm-up mask.
+        returns = prices.pct_change()
         if vol_model == "ewma":
             vol = ewma_vol(
                 returns,
@@ -153,6 +203,7 @@ def _apply_rebalance_threshold(
     contract_rounding: float | Mapping[str, float],
     threshold: float,
     prev_positions: pd.Series | Mapping[str, float] | None,
+    threshold_mode: str = "contracts",
 ) -> pd.DataFrame:
     final = pd.DataFrame(0.0, index=desired_contracts.index, columns=desired_contracts.columns)
     if prev_positions is None:
@@ -169,7 +220,15 @@ def _apply_rebalance_threshold(
         target = desired_contracts.loc[ts].fillna(0.0).copy()
         delta = target - prev
         if threshold > 0:
-            small = delta.abs() < threshold
+            if threshold_mode == "fraction":
+                # Threshold as a fraction of the position, so its meaning does
+                # not swing five orders of magnitude across a universe whose
+                # contract sizes do (0.05 contracts is 0.3% of NAV in BTC and
+                # three cents in XRP).
+                scale = pd.concat([target.abs(), prev.abs()], axis=1).max(axis=1)
+                small = delta.abs() < threshold * scale
+            else:
+                small = delta.abs() < threshold
             target.loc[small] = prev.loc[small]
         rounded = _round_series_to_contracts(target, contract_rounding)
         final.loc[ts] = rounded
@@ -189,6 +248,7 @@ def volatility_target_positions(
     sector_caps: Mapping[str, float] | None = None,
     contract_rounding: float | Mapping[str, float] = 1.0,
     rebalance_threshold: float = 0.25,
+    rebalance_threshold_mode: str = "contracts",
     prev_positions: pd.Series | Mapping[str, float] | None = None,
     vol_model: str = "ewma",
     vol_lookback: int = 63,
@@ -196,12 +256,26 @@ def volatility_target_positions(
     min_vol_periods: int = 20,
     risk_allocator: str = "proportional",
     max_position_weight: float | None = None,
+    max_notional_weight: float | None = None,
     max_asset_weight: float | None = None,
     volatility: pd.DataFrame | None = None,
     periods_per_year: int = 252,
     ewma_center_of_mass: float | None = None,
     vol_warmup: str = "mask",
 ) -> pd.DataFrame:
+    """Size positions to a portfolio volatility target.
+
+    ``max_position_weight`` caps an instrument's share of the RISK BUDGET
+    (pre-vol-division), which is what the config names it maps
+    (``max_instrument_vol_weight``) describe; ``max_notional_weight`` caps the
+    post-division notional weight, the behaviour this parameter previously
+    had. Standalone vol contributions are summed as if correlations were 1.0;
+    there is no covariance matrix, so realised portfolio volatility lands
+    below the target by roughly ``sqrt((1 + (n-1) * rho) / n)`` for average
+    pairwise correlation ``rho``. Treat ``target_portfolio_vol`` as an
+    upper-bound calibration, not a realised-vol promise.
+    """
+
     if prices.empty:
         raise ValueError("Price history is empty")
     if set(prices.columns) != set(signals.columns):
@@ -224,14 +298,21 @@ def volatility_target_positions(
     risk_budget = _risk_budget(signals, allocator=risk_allocator)
     risk_budget = _apply_sector_caps(risk_budget, sector_map, sector_caps)
 
+    if max_position_weight is not None and max_position_weight > 0:
+        # A risk-share cap. Applying this value as a notional clip (the old
+        # behaviour) with the shipped 0.04 bound every instrument roughly 3x
+        # below its uncapped weight and held realised vol near 1% against a
+        # 15% target.
+        risk_budget = risk_budget.clip(upper=float(max_position_weight))
+
     risk_target = risk_budget * float(target_portfolio_vol)
     with np.errstate(divide="ignore", invalid="ignore"):
         weights = risk_target.div(vol)
     weights = weights.replace([np.inf, -np.inf], 0.0).fillna(0.0)
     weights = weights * np.sign(signals)
 
-    if max_position_weight is not None and max_position_weight > 0:
-        weights = weights.clip(upper=max_position_weight, lower=-max_position_weight)
+    if max_notional_weight is not None and max_notional_weight > 0:
+        weights = weights.clip(upper=max_notional_weight, lower=-max_notional_weight)
 
     weights = _apply_max_asset_weight(weights, max_asset_weight)
     weights = _scale_to_gross_limit(weights, gross_exposure_limit)
@@ -245,10 +326,23 @@ def volatility_target_positions(
         contracts[sym] = notional[sym].div(denom)
     contracts = contracts.fillna(0.0)
 
+    if (
+        rebalance_threshold_mode == "contracts"
+        and rebalance_threshold > 0
+        and 2 * rebalance_threshold <= _min_step(contract_rounding, prices.columns)
+    ):
+        logger.warning(
+            "rebalance_threshold %.4g is inert: any change it would suppress "
+            "also rounds away at contract_step. Raise it or set "
+            "rebalance_threshold_mode: fraction.",
+            rebalance_threshold,
+        )
+
     final_positions = _apply_rebalance_threshold(
         contracts,
         contract_rounding=contract_rounding,
         threshold=rebalance_threshold,
         prev_positions=prev_positions,
+        threshold_mode=rebalance_threshold_mode,
     )
     return final_positions
