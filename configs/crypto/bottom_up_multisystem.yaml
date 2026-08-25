@@ -45,6 +45,10 @@ execution:
     alpha: 0.5
   min_slippage_ticks: 0.5
   tick_value: 0.01
+  # Assumed half-spread in basis points of notional, the cost form that scales
+  # sanely across instruments whose prices span orders of magnitude. Values
+  # from tf.costs.crypto; the falsification cost stress multiplies these.
+  spread_bps: {BTC: 1.0, ETH: 1.5, SOL: 4.0, XRP: 5.0}
 
 backtest:
   start: "2018-01-01"

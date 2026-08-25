@@ -218,6 +218,12 @@ def quarterly_roll_schedule(
         # Five days before this expiry the position moves into the next
         # contract, so the segment starting here is named for that one.
         roll_on = expiry - pd.Timedelta(days=roll_days_before)
+        # Five calendar days before a Friday expiry is a Sunday. The continuous
+        # series builder does not care, but RollEngine matches dates exactly, so
+        # a weekend roll date on a weekday session index silently fires no roll
+        # orders and no roll costs. Snap back to the prior business day.
+        while roll_on.dayofweek >= 5:
+            roll_on -= pd.Timedelta(days=1)
         _next_expiry, next_code = expiries[index + 1]
         if start_ts <= roll_on <= end_ts:
             schedule.append((roll_on, next_code))

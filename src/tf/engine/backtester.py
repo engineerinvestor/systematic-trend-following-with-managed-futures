@@ -27,6 +27,53 @@ from .execution import (
 )
 
 
+#: Keys each config block is known to read. Anything else is warned about:
+#: metadata rejects typos loudly, and a silently ignored risk knob is worse.
+_KNOWN_CONFIG_KEYS = {
+    "data": {
+        "calendar", "prefer", "prefer_prices", "price_preference", "strict",
+        "allow_partial_history", "root_dir",
+    },
+    "signals": {
+        "preset", "horizons", "direction", "lag", "momentum", "disable_trend",
+        "systems", "skip_last_n", "transform", "weighting", "symbol",
+    },
+    "risk": {
+        "vol_model", "vol_lookback", "ewma_lambda", "ewma_center_of_mass",
+        "min_vol_periods", "periods_per_year", "target_portfolio_vol",
+        "gross_exposure_limit", "rebalance_threshold", "rebalance_threshold_mode",
+        "risk_allocator", "max_instrument_weight", "max_instrument_vol_weight",
+        "max_notional_weight", "max_asset_weight", "sector_caps",
+        "disable_vol_scaling", "disable_vol_scaling_gross", "vol_warmup",
+    },
+    "execution": {
+        "order_type", "adv_limit_pct", "default_adv_contracts",
+        "average_daily_volume", "adv_contracts", "roll_schedule",
+        "commission_per_contract", "impact", "tick_value", "min_slippage_ticks",
+        "cost_multiplier", "spread_bps",
+    },
+    "backtest": {
+        "start", "end", "starting_nav", "seed", "results_dir", "rebalance",
+        "check_reproducibility", "compound_capital",
+    },
+}
+
+
+def _warn_unknown_keys(cfg: Mapping[str, object]) -> None:
+    for block, known in _KNOWN_CONFIG_KEYS.items():
+        section = cfg.get(block)
+        if not isinstance(section, Mapping):
+            continue
+        unknown = sorted(str(key) for key in section if key not in known)
+        if unknown:
+            logger.warning(
+                "Config block '%s' has keys nothing reads: %s. A typo here "
+                "silently falls back to defaults.",
+                block,
+                ", ".join(unknown),
+            )
+
+
 def _is_daily_calendar(name: object) -> bool:
     """Return whether a config calendar name denotes a 7-day calendar."""
 
@@ -97,6 +144,8 @@ class BacktestResults:
     prices: pd.DataFrame | None = None
     point_values: dict[str, float] | None = None
     sector_map: dict[str, str] | None = None
+    #: Point-in-time eligibility mask this run traded under, or None.
+    eligibility_mask: pd.DataFrame | None = None
 
 
 class Backtester:
@@ -126,7 +175,9 @@ class Backtester:
             u["symbol"]: float(u.get("point_value", 1.0)) for u in self.universe_meta
         }
         self._sector_map = {u["symbol"]: u.get("sector", "Unknown") for u in self.universe_meta}
-        self._observed: pd.DataFrame | None = None
+        #: Last run's eligibility mask, for report tooling. Written per-run, so
+        #: sharing one Backtester across threads is not supported; use
+        #: BacktestResults.eligibility_mask for anything that must be race-free.
         self._eligibility_mask: pd.DataFrame | None = None
         self._contract_steps = {
             u["symbol"]: float(u.get("contract_step", 1.0)) for u in self.universe_meta
@@ -352,6 +403,7 @@ class Backtester:
             and (lhs.pnl.equals(rhs.pnl) if lhs.pnl is not None else rhs.pnl is None)
             and (lhs.cash.equals(rhs.cash) if lhs.cash is not None else rhs.cash is None)
             and (lhs.prices.equals(rhs.prices) if lhs.prices is not None else rhs.prices is None)
+            and (lhs.ledger.equals(rhs.ledger) if lhs.ledger is not None else rhs.ledger is None)
         )
 
     @staticmethod
@@ -569,7 +621,6 @@ class Backtester:
 
         results_dir = Path(backtest_cfg.get("results_dir", str(self.results_dir)))
         results_dir.mkdir(parents=True, exist_ok=True)
-        self.results_dir = results_dir
 
         prices = self.prices.loc[str(start) : str(end)].copy()
         data_cfg = cfg.get("data", {}) or {}
@@ -579,19 +630,20 @@ class Backtester:
             # NaNs. Dropping any-NaN rows would truncate the whole backtest to
             # the shortest history in the universe, so a BTC-and-SOL run would
             # collapse to SOL's window and silently discard years of BTC data.
-            self._observed = prices.notna()
             prices = prices.ffill().dropna(how="all")
         else:
-            self._observed = None
             prices = prices.ffill().dropna()
 
         if prices.empty:
             raise ValueError("No price data available for requested window")
 
-        seed = int(backtest_cfg.get("seed", 0))
-        np.random.seed(seed)
+        # Note: no global RNG seeding. The simulation is deterministic; all
+        # synthetic-data and bootstrap randomness uses numpy Generator objects
+        # seeded explicitly. The old np.random.seed here protected nothing and
+        # stomped process-global state under threaded parameter grids.
 
         exec_cfg = cfg.get("execution", {})
+        _warn_unknown_keys(cfg)
 
         order_type = str(exec_cfg.get("order_type", "market_next_close"))
         if order_type == "market_next_open":
@@ -616,6 +668,22 @@ class Backtester:
         impact_k = float(impact_cfg.get("k", 0.0))
         impact_alpha = float(impact_cfg.get("alpha", 1.0))
         tick_value = float(exec_cfg.get("tick_value", 1.0))
+        cost_multiplier = float(exec_cfg.get("cost_multiplier", 1.0))
+        spread_bps_cfg = exec_cfg.get("spread_bps", {}) or {}
+        if isinstance(spread_bps_cfg, (int, float)):
+            spread_bps = {sym: float(spread_bps_cfg) for sym in prices.columns}
+        else:
+            spread_bps = {sym: float(spread_bps_cfg.get(sym, 0.0)) for sym in prices.columns}
+        # Per-instrument dollar-per-tick from metadata tick_size x point_value.
+        # A single universe-wide tick value cannot serve instruments whose
+        # prices span orders of magnitude; that made a plausible-looking crypto
+        # cost configuration nearly frictionless.
+        tick_values = {}
+        for item in self.universe_meta:
+            sym = item.get("symbol")
+            tick_size = item.get("tick_size")
+            if sym is not None and tick_size is not None:
+                tick_values[sym] = float(tick_size) * float(item.get("point_value", 1.0))
         min_slippage_ticks = float(exec_cfg.get("min_slippage_ticks", 0.0))
         adv_limit_pct = float(exec_cfg.get("adv_limit_pct", 0.0))
         default_adv = float(exec_cfg.get("default_adv_contracts", 10_000.0))
@@ -706,6 +774,16 @@ class Backtester:
             if desired is None:
                 return
             desired = desired.fillna(0.0)
+            # Cancel-and-replace: a new target supersedes any unfilled
+            # rebalance quantity. The old FIFO kept a stale order queued ahead
+            # of its own reversal, so under an ADV cap a target flip first
+            # bought to maximum long on a day the target was flat, then
+            # unwound: phantom round trips at double cost, worst exactly when
+            # capacity is tight. Roll orders keep their place in the queue.
+            for sym in prices.columns:
+                pending_orders[sym] = [
+                    o for o in pending_orders[sym] if o.reason.startswith("roll")
+                ]
             if compound_capital:
                 # Targets were sized off starting capital before the loop began.
                 # Scaling by the live NAV keeps risk proportional to equity, so
@@ -798,10 +876,18 @@ class Backtester:
                         adv=adv_value,
                         k=impact_k,
                         alpha=impact_alpha,
-                        tick_value=tick_value,
+                        tick_value=tick_values.get(sym, tick_value),
                         min_ticks=min_slippage_ticks,
                     )
-                    trade_cost = commission_cost + slippage_cost
+                    # Proportional half-spread in basis points of notional, the
+                    # only cost form that scales sanely across instruments whose
+                    # prices differ by orders of magnitude.
+                    spread_cost = (
+                        abs(fill_qty) * price * pv * spread_bps.get(sym, 0.0) / 10_000.0
+                    )
+                    trade_cost = (
+                        commission_cost + slippage_cost + spread_cost
+                    ) * cost_multiplier
                     if order.reason.startswith("roll"):
                         day_roll_cost += trade_cost
                     else:
@@ -891,5 +977,6 @@ class Backtester:
             ledger=ledger,
             prices=prices,
             point_values=dict(self._point_values),
+            eligibility_mask=self._eligibility_mask,
             sector_map=dict(self._sector_map),
         )

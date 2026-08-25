@@ -90,7 +90,13 @@ def test_quarterly_roll_moves_into_the_next_contract() -> None:
 
     assert codes[0] == "BTCH24"  # front contract in January
     march_expiry = last_friday(2024, 3)
-    assert dates[1] == march_expiry - pd.Timedelta(days=5)
+    raw_roll = march_expiry - pd.Timedelta(days=5)
+    # Five calendar days before a Friday expiry is a Sunday; the schedule snaps
+    # back to the prior business day so RollEngine's exact-date matching can
+    # actually fire on a weekday session index.
+    assert dates[1] <= raw_roll
+    assert dates[1].dayofweek < 5
+    assert (raw_roll - dates[1]).days <= 2
     # Five days before the March expiry the position is in June, not March.
     assert codes[1] == "BTCM24"
     assert dates == sorted(dates)

@@ -639,9 +639,11 @@ def run_falsification(
         raise ValueError("Backtest produced no price history to falsify against")
 
     signals = backtester._build_signals(prices, cfg)
-    if backtester._eligibility_mask is not None:
-        # Without this the placebo trades instruments the engine refuses.
-        mask = backtester._eligibility_mask.reindex_like(signals).fillna(False)
+    if base_result.eligibility_mask is not None:
+        # Without this the placebo trades instruments the engine refuses. Read
+        # from the result, not backtester state, so a threaded caller cannot
+        # race another run's mask into this report.
+        mask = base_result.eligibility_mask.reindex_like(signals).fillna(False)
         signals = signals.where(mask, 0.0)
 
     notes = [
@@ -748,7 +750,7 @@ def run_falsification(
         placebo=placebo,
         attribution=attribution_by_asset(base_result),
         side_attribution=attribution_by_side(base_result),
-        data_span=data_span_table(prices, backtester._eligibility_mask),
+        data_span=data_span_table(prices, base_result.eligibility_mask),
         confidence_intervals=ci_frame,
         notes=notes,
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
 
+import numpy as np
 import pandas as pd
 
 
@@ -66,10 +67,13 @@ def resolve_adv_frame(
 
     if isinstance(adv_source, pd.DataFrame):
         frame = adv_source.reindex(index=index, columns=symbols)
-        return frame.fillna(method="ffill").fillna(method="bfill").fillna(default)
+        return frame.ffill().bfill().fillna(default)
 
     if isinstance(adv_source, Mapping):
-        data = {sym: float(adv_source.get(sym, default)) for sym in symbols}
+        data = {}
+        for sym in symbols:
+            value = float(adv_source.get(sym, default))
+            data[sym] = value if np.isfinite(value) else float(default)
         return pd.DataFrame(data, index=index, dtype=float)
 
     if isinstance(adv_source, (int, float)):
@@ -93,7 +97,9 @@ def participation_slippage(
     if qty == 0:
         return 0.0
     adv = float(adv)
-    if adv <= 0:
+    if not np.isfinite(adv) or adv <= 0:
+        # NaN previously slid through two comparisons and collapsed slippage to
+        # the floor; a missing ADV must cost like zero liquidity, not infinite.
         ticks = max(min_ticks, k)
     else:
         participation = min(abs(qty) / adv, 1.0)

@@ -10,7 +10,9 @@ def deannualize_vol(ann_vol: float, periods: int = 252) -> float:
     return ann_vol / np.sqrt(periods)
 
 def rolling_vol(returns: pd.Series, window: int = 63) -> pd.Series:
-    return returns.rolling(window).std().fillna(method='bfill')
+    # The warm-up stays NaN: the old bfill filled it from a future estimate
+    # (lookahead), and fillna(method=) was removed in pandas 3 anyway.
+    return returns.rolling(window).std()
 
 @dataclass
 class ContractMeta:

@@ -388,3 +388,31 @@ def test_fast_path_detects_an_injected_lookahead() -> None:
 
     assert peeker_sharpe > 5.0          # perfect foresight is unmistakable
     assert abs(honest_sharpe) < 1.5     # a trend rule on a random walk is not
+
+
+def test_proportional_spread_makes_cost_stress_bite(tmp_path) -> None:
+    """R30/M6 regression: with spread_bps configured, 4x costs must hurt.
+
+    The tick-based model made a plausible crypto cost configuration nearly
+    frictionless (6.5bp of annual return between 1x and 4x at ~9x annual
+    turnover); proportional spreads are the fix, and this pins it.
+    """
+
+    from tf.eval.falsification import run_cost_stress
+
+    prices = _prices(("BTC", "ETH"))
+    universe = [
+        {"symbol": s, "sector": "Crypto", "point_value": 1.0, "contract_step": 1e-4,
+         "tick_size": 0.01}
+        for s in ("BTC", "ETH")
+    ]
+    cfg = _config(tmp_path)
+    cfg["execution"]["spread_bps"] = {"BTC": 5.0, "ETH": 8.0}
+    bt = Backtester(prices, universe, cfg)
+    frame = run_cost_stress(bt, cfg, periods_per_year=365)
+
+    cheap = frame.loc["1x costs", "CAGR"]
+    dear = frame.loc["4x costs", "CAGR"]
+    assert dear < cheap
+    assert (cheap - dear) > 0.001  # more than 10bp of annual return
+    assert not frame.attrs.get("costs_barely_bite")
